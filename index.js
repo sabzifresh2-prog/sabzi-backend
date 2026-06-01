@@ -126,7 +126,7 @@ app.post('/api/order/place', async (req, res) => {
         await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`, { method: 'PATCH', body: JSON.stringify(userUpdates) });
 
         // TIME FIX: Telegram message mein wapas Time jod diya gaya hai!
-        let teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n⏰ *Time:* ${formattedDate}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n⏰ *Expected:* ${finalExpectedTime}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
+        let teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n⏰ *Time:* ${formattedDate}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n⏰ *Expected:* ${finalExpectedTime}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
         await fetch(TELEGRAM_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ 'message': teleMessage }) });
 
         res.json({ success: true, orderTimestamp: orderTimestamp });
