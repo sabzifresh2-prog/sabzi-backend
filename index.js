@@ -106,8 +106,11 @@ app.post('/api/order/place', async (req, res) => {
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
+        
+        // TIME FIX: India ke time ke hisaab se date aur time banana
         const orderTimestamp = Date.now();
-        let formattedDate = new Date(orderTimestamp).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) + " " + new Date(orderTimestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+        const options = { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true };
+        const formattedDate = new Date(orderTimestamp).toLocaleString('en-IN', options);
 
         const orderData = { 
             id: orderId, timestamp: orderTimestamp, date: formattedDate, status: "Packing in Progress ⏳", 
@@ -122,8 +125,8 @@ app.post('/api/order/place', async (req, res) => {
         if(isRewardUsed) userUpdates.freeDeliveries = userData.freeDeliveries - 1;
         await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`, { method: 'PATCH', body: JSON.stringify(userUpdates) });
 
-        // YAHAN NAYA LINK (TELEGRAM_SCRIPT_URL) USE HUA HAI
-        let teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
+        // TIME FIX: Telegram message mein wapas Time jod diya gaya hai!
+        let teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n⏰ *Time:* ${formattedDate}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
         await fetch(TELEGRAM_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ 'message': teleMessage }) });
 
         res.json({ success: true, orderTimestamp: orderTimestamp });
