@@ -43,24 +43,31 @@ app.post('/api/otp/verify', async (req, res) => {
 
 
 // ==========================================
-// POINT 2: SECURE BILL CALCULATOR (Naya)
+    // ==========================================
+// POINT 2: SECURE BILL CALCULATOR
 // ==========================================
 app.post('/api/order/calculate', async (req, res) => {
     try {
-        // Frontend sirf ye batayega ki kaunsa item kitna kilo chahiye
         const { cartItems } = req.body; 
         
-        // 1. Backend chup-chaap Firebase se aaj ka ASLI RATE mangwayega
+        // 1. Backend Firebase se Products aur Admin Settings dono padhega
         const dbResponse = await fetch(`${FIREBASE_DB_URL}/products.json`);
         const productsDB = await dbResponse.json();
+
+        const settingsResponse = await fetch(`${FIREBASE_DB_URL}/settings.json`);
+        const settingsDB = await settingsResponse.json();
+
+        // Admin Panel wali values nikalna (Agar setting nahi hai toh default 20)
+        let adminDeliveryFee = settingsDB && settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
+        let adminFreeLimit = settingsDB && settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
 
         let secureSubtotal = 0;
         let secureItemsList = [];
 
-        // 2. Fraud Check (Backend khud multiply karke check karega)
+        // 2. Fraud Check (Asli rate se guna karna)
         for (let itemId in cartItems) {
             let qty = cartItems[itemId];
-            let asliProduct = productsDB[itemId]; // Hacker isko change nahi kar sakta
+            let asliProduct = productsDB[itemId]; 
 
             if (asliProduct && qty > 0) {
                 let itemTotal = asliProduct.price * qty;
@@ -71,15 +78,14 @@ app.post('/api/order/calculate', async (req, res) => {
             }
         }
 
-        // 3. Delivery Charge (Agar 100 se kam ka order hai toh 20 rupaye)
-        let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < 100) ? 20 : 0;
+        // 3. Delivery Charge (Ab fix 20 nahi, Admin Panel wala charge lagega)
+        let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
         // 4. Result wapas bhejna
         res.json({
             success: true,
             message: "Hacker-proof bill taiyaar hai!",
-            hackerKiNakal: "Zero", // Hacker ka total reject kar diya gaya
             asliSubtotal: secureSubtotal,
             asliDelivery: secureDeliveryCharge,
             asliTotal: secureFinalTotal,
@@ -89,9 +95,4 @@ app.post('/api/order/calculate', async (req, res) => {
     } catch (error) {
         res.json({ success: false, message: "Bill calculate karne mein error aaya." });
     }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server port ${PORT} par chal raha hai`);
 });
