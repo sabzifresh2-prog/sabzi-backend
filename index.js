@@ -6,7 +6,8 @@ app.use(cors());
 app.use(express.json());
 
 // --- SECURE KEYS ---
-const GOOGLE_SCRIPT_URL = (process.env.GOOGLE_SCRIPT_URL || "").trim();
+const GOOGLE_SCRIPT_URL = (process.env.GOOGLE_SCRIPT_URL || "").trim(); // OTP Wala Link
+const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim(); // Telegram Wala Link
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 const FIREBASE_DB_URL = "https://sabzifresh-d8742-default-rtdb.firebaseio.com";
 
@@ -38,7 +39,7 @@ app.post('/api/otp/verify', async (req, res) => {
 });
 
 // ==========================================
-// 2. ACCOUNT CREATOR (Backend Firebase Write)
+// 2. ACCOUNT CREATOR
 // ==========================================
 app.post('/api/user/register', async (req, res) => {
     try {
@@ -48,7 +49,6 @@ app.post('/api/user/register', async (req, res) => {
         const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
         const newUser = { name, email, savedVillage: "", savedStreet: "", referCode: newCode, freeDeliveries: 0, rewardExpiry: null };
 
-        // Render khud naya user Firebase mein banayega
         await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`, { method: 'PUT', body: JSON.stringify(newUser) });
         await fetch(`${FIREBASE_DB_URL}/referCodes/${newCode}.json`, { method: 'PUT', body: JSON.stringify(phone) });
 
@@ -64,7 +64,6 @@ app.post('/api/order/place', async (req, res) => {
         const { cartItems, customerDetails } = req.body; 
         if (!cartItems || typeof cartItems !== 'object') return res.json({ success: false, message: "Cart invalid." });
 
-        // 1. Firebase se Asli Rates aur User info padhna
         const [dbRes, setRes, userRes] = await Promise.all([
             fetch(`${FIREBASE_DB_URL}/products.json`),
             fetch(`${FIREBASE_DB_URL}/settings.json`),
@@ -82,7 +81,6 @@ app.post('/api/order/place', async (req, res) => {
         let secureItemsArr = [];
         let secureAdminItemsString = [];
 
-        // 2. Fraud Check & Total
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]); 
             let asliProduct = productsDB[itemId]; 
@@ -107,7 +105,6 @@ app.post('/api/order/place', async (req, res) => {
 
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-        // 3. Order Data Banana
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
         const orderTimestamp = Date.now();
         let formattedDate = new Date(orderTimestamp).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) + " " + new Date(orderTimestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
@@ -119,19 +116,16 @@ app.post('/api/order/place', async (req, res) => {
             items: secureItemsArr, itemsList: secureAdminItemsString.join(', '), usedFreeDelivery: isRewardUsed 
         };
 
-        // 4. Render khud Firebase mein Order save karega (Point 3)
         await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, { method: 'PUT', body: JSON.stringify(orderData) });
 
-        // User ka free delivery count kam karna aur address save karna
         let userUpdates = { savedVillage: customerDetails.village, savedStreet: customerDetails.street };
         if(isRewardUsed) userUpdates.freeDeliveries = userData.freeDeliveries - 1;
         await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`, { method: 'PATCH', body: JSON.stringify(userUpdates) });
 
-        // 5. Render parde ke peeche se Telegram ko message bhejega
+        // YAHAN NAYA LINK (TELEGRAM_SCRIPT_URL) USE HUA HAI
         let teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
-        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ 'message': teleMessage }) });
+        await fetch(TELEGRAM_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ 'message': teleMessage }) });
 
-        // 6. Sab theek hone par app ko response dena
         res.json({ success: true, orderTimestamp: orderTimestamp });
 
     } catch (error) {
