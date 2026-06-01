@@ -8,129 +8,137 @@ app.use(express.json());
 // --- SECURE KEYS ---
 const GOOGLE_SCRIPT_URL = (process.env.GOOGLE_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
-
-// Aapke Firebase Database ka URL
 const FIREBASE_DB_URL = "https://sabzifresh-d8742-default-rtdb.firebaseio.com";
 
-app.get('/', (req, res) => {
-    res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai!' });
-});
+app.get('/', (req, res) => { res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai!' }); });
 
 // ==========================================
-// 1. OTP BHEJNA
+// 1. OTP BHEJNA & VERIFY KARNA
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
         const { email } = req.body;
-        // Validation: Email check karna
         if (!email) return res.json({ success: false, message: "Email required" });
-
         const url = `${GOOGLE_SCRIPT_URL}?action=send_otp&email=${encodeURIComponent(email)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
         const response = await fetch(url);
         const text = await response.text();
-        
-        try { 
-            res.json(JSON.parse(text)); 
-        } catch (e) { 
-            res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); 
-        }
-    } catch (error) { 
-        res.json({ success: false, message: "Server Error" }); 
-    }
+        try { res.json(JSON.parse(text)); } catch (e) { res.json({ success: false, message: "Google Error" }); }
+    } catch (error) { res.json({ success: false, message: "Server Error" }); }
 });
 
-// ==========================================
-// 2. OTP VERIFY KARNA
-// ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
         const { email, code } = req.body;
-        // Validation: Email aur Code check karna
         if (!email || !code) return res.json({ success: false, message: "Email aur code zaroori hai" });
-
         const url = `${GOOGLE_SCRIPT_URL}?action=verify_otp&email=${encodeURIComponent(email)}&code=${encodeURIComponent(code)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
         const response = await fetch(url);
         const text = await response.text();
-        
-        try { 
-            res.json(JSON.parse(text)); 
-        } catch (e) { 
-            res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); 
-        }
-    } catch (error) { 
-        res.json({ success: false, message: "Server Error" }); 
-    }
+        try { res.json(JSON.parse(text)); } catch (e) { res.json({ success: false, message: "Google Error" }); }
+    } catch (error) { res.json({ success: false, message: "Server Error" }); }
 });
 
 // ==========================================
-// 3. SECURE BILL CALCULATOR (With Admin Settings)
+// 2. ACCOUNT CREATOR (Backend Firebase Write)
 // ==========================================
-app.post('/api/order/calculate', async (req, res) => {
+app.post('/api/user/register', async (req, res) => {
     try {
-        const { cartItems } = req.body; 
-        
-        // Safety check: Pata lagana ki cartItems bheja gaya hai aur valid hai
-        if (!cartItems || typeof cartItems !== 'object') {
-            return res.json({ success: false, message: "Cart khali hai ya invalid hai." });
-        }
+        const { phone, name, email } = req.body;
+        if (!phone || phone.length !== 10) return res.json({ success: false, message: "Invalid phone" });
 
-        // Backend Firebase se Products aur Admin Settings ek sath (parallel) padhega
-        const [dbResponse, settingsResponse] = await Promise.all([
+        const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
+        const newUser = { name, email, savedVillage: "", savedStreet: "", referCode: newCode, freeDeliveries: 0, rewardExpiry: null };
+
+        // Render khud naya user Firebase mein banayega
+        await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`, { method: 'PUT', body: JSON.stringify(newUser) });
+        await fetch(`${FIREBASE_DB_URL}/referCodes/${newCode}.json`, { method: 'PUT', body: JSON.stringify(phone) });
+
+        res.json({ success: true, message: "Account Created!" });
+    } catch (error) { res.json({ success: false, message: "Registration failed." }); }
+});
+
+// ==========================================
+// 3. ORDER MANAGER (Bill Check + Save DB + Telegram)
+// ==========================================
+app.post('/api/order/place', async (req, res) => {
+    try {
+        const { cartItems, customerDetails } = req.body; 
+        if (!cartItems || typeof cartItems !== 'object') return res.json({ success: false, message: "Cart invalid." });
+
+        // 1. Firebase se Asli Rates aur User info padhna
+        const [dbRes, setRes, userRes] = await Promise.all([
             fetch(`${FIREBASE_DB_URL}/products.json`),
-            fetch(`${FIREBASE_DB_URL}/settings.json`)
+            fetch(`${FIREBASE_DB_URL}/settings.json`),
+            fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`)
         ]);
 
-        if (!dbResponse.ok || !settingsResponse.ok) {
-            throw new Error("Firebase fetch failed");
-        }
+        const productsDB = await dbRes.json() || {};
+        const settingsDB = await setRes.json() || {};
+        const userData = await userRes.json() || {};
 
-        const productsDB = await dbResponse.json() || {};
-        const settingsDB = await settingsResponse.json() || {};
-
-        // Admin Panel wali values nikalna (Agar setting nahi hai toh default lagao)
         let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
 
         let secureSubtotal = 0;
-        let secureItemsList = [];
+        let secureItemsArr = [];
+        let secureAdminItemsString = [];
 
-        // Fraud Check
+        // 2. Fraud Check & Total
         for (let itemId in cartItems) {
-            // YAHAN FIX KIYA HAI: parseFloat lagaya hai taaki 0.5 Kg sabzi ka rate sahi aaye
             let qty = parseFloat(cartItems[itemId]); 
             let asliProduct = productsDB[itemId]; 
-
-            // Check karna ki product database mein hai aur qty sahi hai
             if (asliProduct && !isNaN(qty) && qty > 0) {
                 let itemTotal = asliProduct.price * qty;
                 secureSubtotal += itemTotal;
-                
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-                secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
+                secureItemsArr.push({ name: `${itemName} x${qty}`, price: itemTotal });
+                secureAdminItemsString.push(`${itemName} x${qty}`);
             }
         }
 
-        // Delivery Charge (Admin Panel wala charge lagega)
+        if(secureSubtotal <= 0) return res.json({ success: false, message: "Cart total zero hai." });
+
+        let isRewardUsed = false;
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
+        
+        if (userData.freeDeliveries > 0 && (!userData.rewardExpiry || userData.rewardExpiry > Date.now())) {
+            secureDeliveryCharge = 0;
+            isRewardUsed = true;
+        }
+
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-        // Result wapas bhejna
-        res.json({
-            success: true,
-            message: "Hacker-proof bill taiyaar hai!",
-            asliSubtotal: secureSubtotal,
-            asliDelivery: secureDeliveryCharge,
-            asliTotal: secureFinalTotal,
-            verifiedItems: secureItemsList
-        });
+        // 3. Order Data Banana
+        const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
+        const orderTimestamp = Date.now();
+        let formattedDate = new Date(orderTimestamp).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) + " " + new Date(orderTimestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+        const orderData = { 
+            id: orderId, timestamp: orderTimestamp, date: formattedDate, status: "Packing in Progress ⏳", 
+            total: secureFinalTotal, deliveryCharge: secureDeliveryCharge, customer: customerDetails.name, 
+            phone: customerDetails.phone, email: customerDetails.email || '', address: customerDetails.address, 
+            items: secureItemsArr, itemsList: secureAdminItemsString.join(', '), usedFreeDelivery: isRewardUsed 
+        };
+
+        // 4. Render khud Firebase mein Order save karega (Point 3)
+        await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, { method: 'PUT', body: JSON.stringify(orderData) });
+
+        // User ka free delivery count kam karna aur address save karna
+        let userUpdates = { savedVillage: customerDetails.village, savedStreet: customerDetails.street };
+        if(isRewardUsed) userUpdates.freeDeliveries = userData.freeDeliveries - 1;
+        await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`, { method: 'PATCH', body: JSON.stringify(userUpdates) });
+
+        // 5. Render parde ke peeche se Telegram ko message bhejega
+        let teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
+        await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ 'message': teleMessage }) });
+
+        // 6. Sab theek hone par app ko response dena
+        res.json({ success: true, orderTimestamp: orderTimestamp });
 
     } catch (error) {
-        console.error("Bill Calculation Error:", error);
-        res.json({ success: false, message: "Bill calculate karne mein error aaya." });
+        console.error("Order Place Error:", error);
+        res.json({ success: false, message: "Order save karne mein error aaya." });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server port ${PORT} par chal raha hai`);
-});
+app.listen(PORT, () => { console.log(`Server port ${PORT} par chal raha hai`); });
