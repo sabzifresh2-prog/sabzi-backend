@@ -61,7 +61,8 @@ app.post('/api/user/register', async (req, res) => {
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
-        const { cartItems, customerDetails } = req.body; 
+        // ERROR FIX: Yahan 'expectedTime' ko bulaya gaya hai
+        const { cartItems, customerDetails, expectedTime } = req.body; 
         if (!cartItems || typeof cartItems !== 'object') return res.json({ success: false, message: "Cart invalid." });
 
         const [dbRes, setRes, userRes] = await Promise.all([
@@ -112,10 +113,14 @@ app.post('/api/order/place', async (req, res) => {
         const options = { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true };
         const formattedDate = new Date(orderTimestamp).toLocaleString('en-IN', options);
 
+        // ERROR FIX: Yahan 'finalExpectedTime' ko banaya gaya hai taaki crash na ho
+        const finalExpectedTime = expectedTime || "Will be updated soon";
+
         const orderData = { 
             id: orderId, timestamp: orderTimestamp, date: formattedDate, status: "Packing in Progress ⏳", 
             total: secureFinalTotal, deliveryCharge: secureDeliveryCharge, customer: customerDetails.name, 
             phone: customerDetails.phone, email: customerDetails.email || '', address: customerDetails.address, 
+            expectedDelivery: finalExpectedTime,
             items: secureItemsArr, itemsList: secureAdminItemsString.join(', '), usedFreeDelivery: isRewardUsed 
         };
 
@@ -125,11 +130,11 @@ app.post('/api/order/place', async (req, res) => {
         if(isRewardUsed) userUpdates.freeDeliveries = userData.freeDeliveries - 1;
         await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`, { method: 'PATCH', body: JSON.stringify(userUpdates) });
 
-        // TIME FIX: Telegram message mein wapas Time jod diya gaya hai!
         let teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n⏰ *Time:* ${formattedDate}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n⏰ *Expected:* ${finalExpectedTime}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
         await fetch(TELEGRAM_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ 'message': teleMessage }) });
 
-        res.json({ success: true, orderTimestamp: orderTimestamp });
+        // ERROR FIX: Wapas bhejne wale result mein expectedTime daal diya gaya hai
+        res.json({ success: true, orderTimestamp: orderTimestamp, expectedTime: finalExpectedTime });
 
     } catch (error) {
         console.error("Order Place Error:", error);
