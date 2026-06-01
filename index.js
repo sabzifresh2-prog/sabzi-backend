@@ -22,12 +22,21 @@ app.get('/', (req, res) => {
 app.post('/api/otp/send', async (req, res) => {
     try {
         const { email } = req.body;
+        // Validation: Email check karna
+        if (!email) return res.json({ success: false, message: "Email required" });
+
         const url = `${GOOGLE_SCRIPT_URL}?action=send_otp&email=${encodeURIComponent(email)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
         const response = await fetch(url);
         const text = await response.text();
-        try { res.json(JSON.parse(text)); } 
-        catch (e) { res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); }
-    } catch (error) { res.json({ success: false, message: "Server Error" }); }
+        
+        try { 
+            res.json(JSON.parse(text)); 
+        } catch (e) { 
+            res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); 
+        }
+    } catch (error) { 
+        res.json({ success: false, message: "Server Error" }); 
+    }
 });
 
 // ==========================================
@@ -36,12 +45,21 @@ app.post('/api/otp/send', async (req, res) => {
 app.post('/api/otp/verify', async (req, res) => {
     try {
         const { email, code } = req.body;
+        // Validation: Email aur Code check karna
+        if (!email || !code) return res.json({ success: false, message: "Email aur code zaroori hai" });
+
         const url = `${GOOGLE_SCRIPT_URL}?action=verify_otp&email=${encodeURIComponent(email)}&code=${encodeURIComponent(code)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
         const response = await fetch(url);
         const text = await response.text();
-        try { res.json(JSON.parse(text)); } 
-        catch (e) { res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); }
-    } catch (error) { res.json({ success: false, message: "Server Error" }); }
+        
+        try { 
+            res.json(JSON.parse(text)); 
+        } catch (e) { 
+            res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); 
+        }
+    } catch (error) { 
+        res.json({ success: false, message: "Server Error" }); 
+    }
 });
 
 // ==========================================
@@ -51,30 +69,43 @@ app.post('/api/order/calculate', async (req, res) => {
     try {
         const { cartItems } = req.body; 
         
-        // Backend Firebase se Products aur Admin Settings dono padhega
-        const dbResponse = await fetch(`${FIREBASE_DB_URL}/products.json`);
-        const productsDB = await dbResponse.json();
+        // Safety check: Pata lagana ki cartItems bheja gaya hai aur valid hai
+        if (!cartItems || typeof cartItems !== 'object') {
+            return res.json({ success: false, message: "Cart khali hai ya invalid hai." });
+        }
 
-        const settingsResponse = await fetch(`${FIREBASE_DB_URL}/settings.json`);
-        const settingsDB = await settingsResponse.json();
+        // Backend Firebase se Products aur Admin Settings ek sath (parallel) padhega
+        const [dbResponse, settingsResponse] = await Promise.all([
+            fetch(`${FIREBASE_DB_URL}/products.json`),
+            fetch(`${FIREBASE_DB_URL}/settings.json`)
+        ]);
 
-        // Admin Panel wali values nikalna (Agar setting nahi hai toh default 20)
-        let adminDeliveryFee = settingsDB && settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
-        let adminFreeLimit = settingsDB && settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
+        if (!dbResponse.ok || !settingsResponse.ok) {
+            throw new Error("Firebase fetch failed");
+        }
+
+        const productsDB = await dbResponse.json() || {};
+        const settingsDB = await settingsResponse.json() || {};
+
+        // Admin Panel wali values nikalna (Agar setting nahi hai toh default lagao)
+        let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
+        let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
 
         let secureSubtotal = 0;
         let secureItemsList = [];
 
         // Fraud Check
         for (let itemId in cartItems) {
-            let qty = cartItems[itemId];
+            // YAHAN FIX KIYA HAI: parseFloat lagaya hai taaki 0.5 Kg sabzi ka rate sahi aaye
+            let qty = parseFloat(cartItems[itemId]); 
             let asliProduct = productsDB[itemId]; 
 
-            if (asliProduct && qty > 0) {
+            // Check karna ki product database mein hai aur qty sahi hai
+            if (asliProduct && !isNaN(qty) && qty > 0) {
                 let itemTotal = asliProduct.price * qty;
                 secureSubtotal += itemTotal;
                 
-                let itemName = asliProduct.nameEn || asliProduct.adminName;
+                let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
             }
         }
@@ -94,6 +125,7 @@ app.post('/api/order/calculate', async (req, res) => {
         });
 
     } catch (error) {
+        console.error("Bill Calculation Error:", error);
         res.json({ success: false, message: "Bill calculate karne mein error aaya." });
     }
 });
