@@ -9,7 +9,7 @@ app.use(express.json());
 const GOOGLE_SCRIPT_URL = (process.env.GOOGLE_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// Aapke Firebase Database ka URL (Yahan se backend asli price padhega)
+// Aapke Firebase Database ka URL
 const FIREBASE_DB_URL = "https://sabzifresh-d8742-default-rtdb.firebaseio.com";
 
 app.get('/', (req, res) => {
@@ -17,7 +17,7 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// POINT 1: OTP SYSTEM (Pehle jaisa safe hai)
+// 1. OTP BHEJNA
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
@@ -30,6 +30,9 @@ app.post('/api/otp/send', async (req, res) => {
     } catch (error) { res.json({ success: false, message: "Server Error" }); }
 });
 
+// ==========================================
+// 2. OTP VERIFY KARNA
+// ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
         const { email, code } = req.body;
@@ -41,16 +44,14 @@ app.post('/api/otp/verify', async (req, res) => {
     } catch (error) { res.json({ success: false, message: "Server Error" }); }
 });
 
-
 // ==========================================
-    // ==========================================
-// POINT 2: SECURE BILL CALCULATOR
+// 3. SECURE BILL CALCULATOR (With Admin Settings)
 // ==========================================
 app.post('/api/order/calculate', async (req, res) => {
     try {
         const { cartItems } = req.body; 
         
-        // 1. Backend Firebase se Products aur Admin Settings dono padhega
+        // Backend Firebase se Products aur Admin Settings dono padhega
         const dbResponse = await fetch(`${FIREBASE_DB_URL}/products.json`);
         const productsDB = await dbResponse.json();
 
@@ -64,7 +65,7 @@ app.post('/api/order/calculate', async (req, res) => {
         let secureSubtotal = 0;
         let secureItemsList = [];
 
-        // 2. Fraud Check (Asli rate se guna karna)
+        // Fraud Check
         for (let itemId in cartItems) {
             let qty = cartItems[itemId];
             let asliProduct = productsDB[itemId]; 
@@ -78,11 +79,11 @@ app.post('/api/order/calculate', async (req, res) => {
             }
         }
 
-        // 3. Delivery Charge (Ab fix 20 nahi, Admin Panel wala charge lagega)
+        // Delivery Charge (Admin Panel wala charge lagega)
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-        // 4. Result wapas bhejna
+        // Result wapas bhejna
         res.json({
             success: true,
             message: "Hacker-proof bill taiyaar hai!",
@@ -95,4 +96,9 @@ app.post('/api/order/calculate', async (req, res) => {
     } catch (error) {
         res.json({ success: false, message: "Bill calculate karne mein error aaya." });
     }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server port ${PORT} par chal raha hai`);
 });
