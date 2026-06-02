@@ -373,3 +373,65 @@ app.post('/api/admin/give-reward', async (req, res) => {
         res.json({ success: false, message: error.message });
     }
 });
+// ==========================================
+// 8. 🚫 SECURE ORDER CANCEL (User Token Ke Sath)
+// ==========================================
+app.post('/api/order/cancel', async (req, res) => {
+    try {
+        const { orderId, cancelReason, userToken } = req.body;
+
+        if (!orderId || !userToken) {
+            return res.json({ success: false, message: "Order ID aur Token zaroori hai" });
+        }
+
+        // 1. Order ka existing data fetch karna (VIP Token se)
+        // Firebase rules check karenge ki ye order sach mein isi user ka hai ya nahi
+        const orderRes = await fetch(getDbUrl(`/orders/${orderId}.json`, userToken));
+        
+        if (!orderRes.ok) {
+            return res.json({ success: false, message: "VIP Lock: Aapko ye order cancel karne ki permission nahi hai." });
+        }
+
+        const orderData = await orderRes.json();
+        
+        if (!orderData) {
+            return res.json({ success: false, message: "Order nahi mila." });
+        }
+
+        // 2. Check karna ki order raste mein toh nahi nikal gaya
+        if (orderData.status !== 'Packing in Progress ⏳' && orderData.status !== 'Confirmed') {
+            return res.json({ success: false, message: "Order pack ho chuka hai ya raste mein hai, ab cancel nahi ho sakta." });
+        }
+
+        // 3. Status Update karna (Database mein)
+        await fetch(getDbUrl(`/orders/${orderId}.json`, userToken), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                status: 'Cancelled by Customer', 
+                cancelReason: cancelReason || 'No reason provided'
+            })
+        });
+
+        // 4. User profile mein cancelCount badhana (Anti-spam ke liye)
+        if (orderData.phone) {
+            const userRes = await fetch(getDbUrl(`/users/${orderData.phone}.json`, userToken));
+            if (userRes.ok) {
+                const userData = await userRes.json();
+                const newCancelCount = (parseInt(userData.cancelCount) || 0) + 1;
+                
+                await fetch(getDbUrl(`/users/${orderData.phone}.json`, userToken), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cancelCount: newCancelCount })
+                });
+            }
+        }
+
+        res.json({ success: true, message: "Order successfully cancel ho gaya." });
+
+    } catch (error) {
+        console.error("Cancel Order Error:", error);
+        res.json({ success: false, message: "Server error" });
+    }
+});
