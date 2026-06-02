@@ -5,12 +5,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- SECURE KEYS --- (.env file se aayenge)
+// ==========================================
+// SECURE KEYS (.env file se aayenge)
+// ==========================================
 const GOOGLE_SCRIPT_URL   = (process.env.GOOGLE_SCRIPT_URL   || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY      = (process.env.OTP_SECRET_KEY      || "").trim();
 const FIREBASE_DB_URL     = (process.env.FIREBASE_DB_URL     || "https://sabzifresh-d8742-default-rtdb.firebaseio.com").trim();
 
+// --- TEST ROUTE ---
 app.get('/', (req, res) => {
     res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai!' });
 });
@@ -32,7 +35,7 @@ app.post('/api/otp/send', async (req, res) => {
 });
 
 // ==========================================
-// POINT 1: OTP VERIFY KARNA
+// POINT 2: OTP VERIFY KARNA
 // ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
@@ -47,7 +50,7 @@ app.post('/api/otp/verify', async (req, res) => {
 });
 
 // ==========================================
-// POINT 4: NAYA USER REGISTER
+// POINT 3: NAYA USER REGISTER KARNA
 // ==========================================
 app.post('/api/user/register', async (req, res) => {
     try {
@@ -93,7 +96,7 @@ app.post('/api/user/register', async (req, res) => {
 });
 
 // ==========================================
-// POINT 3 + 5 + 2: ORDER PLACE KARNA
+// POINT 4: ORDER PLACE KARNA (With Auto-Email Fix)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -103,19 +106,28 @@ app.post('/api/order/place', async (req, res) => {
         if (!customerDetails || !customerDetails.phone || !customerDetails.name) return res.json({ success: false, message: "Customer details missing." });
 
         const [dbRes, setRes, userRes] = await Promise.all([
-            fetch(`${FIREBASE_DB_URL}/products.json`), fetch(`${FIREBASE_DB_URL}/settings.json`), fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`)
+            fetch(`${FIREBASE_DB_URL}/products.json`), 
+            fetch(`${FIREBASE_DB_URL}/settings.json`), 
+            fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`)
         ]);
 
-        const productsDB = await dbRes.json() || {}; const settingsDB = await setRes.json() || {}; const userData = await userRes.json() || {};
+        const productsDB = await dbRes.json() || {}; 
+        const settingsDB = await setRes.json() || {}; 
+        const userData   = await userRes.json() || {};
+
         const adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         const adminFreeLimit   = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
 
-        let secureSubtotal = 0; let secureItemsArr = []; let secureAdminItemsString = [];
+        let secureSubtotal = 0; 
+        let secureItemsArr = []; 
+        let secureAdminItemsString = [];
 
         for (let itemId in cartItems) {
-            const qty = parseFloat(cartItems[itemId]); const asliProduct = productsDB[itemId];
+            const qty = parseFloat(cartItems[itemId]); 
+            const asliProduct = productsDB[itemId];
             if (asliProduct && !isNaN(qty) && qty > 0) {
-                const itemTotal = asliProduct.price * qty; secureSubtotal += itemTotal;
+                const itemTotal = asliProduct.price * qty; 
+                secureSubtotal += itemTotal;
                 const itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
                 secureItemsArr.push({ name: `${itemName} x${qty}`, price: itemTotal });
                 secureAdminItemsString.push(`${itemName} x${qty}`);
@@ -123,8 +135,13 @@ app.post('/api/order/place', async (req, res) => {
         }
         if (secureSubtotal <= 0) return res.json({ success: false, message: "Cart mein sahi items nahi hain." });
 
-        let isRewardUsed = false; let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
-        if (userData.freeDeliveries > 0 && (!userData.rewardExpiry || userData.rewardExpiry > Date.now())) { secureDeliveryCharge = 0; isRewardUsed = true; }
+        let isRewardUsed = false; 
+        let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
+        
+        if (userData.freeDeliveries > 0 && (!userData.rewardExpiry || userData.rewardExpiry > Date.now())) { 
+            secureDeliveryCharge = 0; 
+            isRewardUsed = true; 
+        }
 
         const secureFinalTotal = secureSubtotal + secureDeliveryCharge;
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2, 4).toUpperCase();
@@ -132,7 +149,22 @@ app.post('/api/order/place', async (req, res) => {
         const formattedDate = new Date(orderTimestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });
         const finalExpectedTime = expectedTime || "Kal subah 7-10 baje tak";
 
-        const orderData = { id: orderId, timestamp: orderTimestamp, date: formattedDate, status: "Packing in Progress ⏳", total: secureFinalTotal, deliveryCharge: secureDeliveryCharge, customer: customerDetails.name, phone: customerDetails.phone, email: customerDetails.email || '', address: customerDetails.address, expectedDelivery: finalExpectedTime, items: secureItemsArr, itemsList: secureAdminItemsString.join(', '), usedFreeDelivery: isRewardUsed };
+        const orderData = { 
+            id: orderId, 
+            timestamp: orderTimestamp, 
+            date: formattedDate, 
+            status: "Packing in Progress ⏳", 
+            total: secureFinalTotal, 
+            deliveryCharge: secureDeliveryCharge, 
+            customer: customerDetails.name, 
+            phone: customerDetails.phone, 
+            email: customerDetails.email || userData.email || '', // FIX: Auto fetch email from database
+            address: customerDetails.address, 
+            expectedDelivery: finalExpectedTime, 
+            items: secureItemsArr, 
+            itemsList: secureAdminItemsString.join(', '), 
+            usedFreeDelivery: isRewardUsed 
+        };
 
         await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, { method: 'PUT', body: JSON.stringify(orderData) });
 
@@ -150,12 +182,8 @@ app.post('/api/order/place', async (req, res) => {
     } catch (error) { res.json({ success: false, message: "Order save error: " + error.message }); }
 });
 
-
-// YAHI WO LINE HAI JO MISSING THI
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { console.log(`Sabzi Fresh Backend port ${PORT} par chal raha hai`); });
 // ==========================================
-// POINT 7: ORDER CANCEL (ONLY EMAIL VERIFICATION)
+// POINT 5: ORDER CANCEL (Strict Email Validation)
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
@@ -173,7 +201,6 @@ app.post('/api/order/cancel', async (req, res) => {
         const dbEmail = String(orderData.email || "").trim().toLowerCase();
         const reqEmail = String(email || "").trim().toLowerCase();
 
-        // 100% Strict Check: Sirf Verified Email match hona chahiye
         if (dbEmail === "" || dbEmail !== reqEmail) {
             return res.json({ success: false, message: "Ye order aapke account se match nahi hua." });
         }
@@ -190,7 +217,6 @@ app.post('/api/order/cancel', async (req, res) => {
             body: JSON.stringify({ status: "Cancelled by Customer", cancelReason: reason || "No reason given" })
         });
 
-        // Cancel count badhane ke liye phone check karenge agar database mein use hua ho
         if (orderData.phone) {
             const userRes  = await fetch(`${FIREBASE_DB_URL}/users/${orderData.phone}.json`);
             const userData = await userRes.json() || {};
@@ -205,4 +231,12 @@ app.post('/api/order/cancel', async (req, res) => {
     } catch (error) {
         res.json({ success: false, message: "Cancel error: " + error.message });
     }
+});
+
+// ==========================================
+// SERVER START 
+// ==========================================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => { 
+    console.log(`Sabzi Fresh Backend port ${PORT} par chal raha hai`); 
 });
