@@ -328,3 +328,48 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server port ${PORT} par chal raha hai`);
 });
+// ==========================================
+// 7. 🎁 MANUAL REWARD DENA (Sirf Admin Ke Liye)
+// ==========================================
+app.post('/api/admin/give-reward', async (req, res) => {
+    try {
+        const { targetPhone, rewardCount, adminToken } = req.body;
+
+        if (!targetPhone || !rewardCount || !adminToken) {
+            return res.json({ success: false, message: "Target Phone, Reward Count aur Admin Token zaroori hai" });
+        }
+
+        // 1. User ka purana data nikalo (Admin Token se lock khol kar)
+        const userRes = await fetch(getDbUrl(`/users/${targetPhone}.json`, adminToken));
+        
+        if (!userRes.ok) {
+            return res.json({ success: false, message: "Aapko Admin access nahi hai!" });
+        }
+        
+        const userData = await userRes.json();
+        if (!userData) {
+            return res.json({ success: false, message: "User nahi mila" });
+        }
+
+        // 2. Naya Reward set karo
+        let currentFreeDel = parseInt(userData.freeDeliveries) || 0;
+        let newFreeDel = currentFreeDel + parseInt(rewardCount);
+        let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 din ki validity
+
+        // 3. Database update karo
+        await fetch(getDbUrl(`/users/${targetPhone}.json`, adminToken), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                freeDeliveries: newFreeDel > 0 ? newFreeDel : 0, // 0 se kam na ho
+                rewardExpiry: newFreeDel > 0 ? newExpiry : null
+            })
+        });
+
+        res.json({ success: true, message: `User ${targetPhone} ko ${rewardCount} reward manually de diya gaya.` });
+
+    } catch (error) {
+        console.error("Manual Reward Error:", error);
+        res.json({ success: false, message: error.message });
+    }
+});
