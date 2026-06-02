@@ -6,20 +6,25 @@ app.use(cors());
 app.use(express.json());
 
 // --- SECURE ENVIRONMENT VARIABLES ---
-// Server (Railway/Render) mein ye 3 variables set karein:
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
+const FIREBASE_SECRET = (process.env.FIREBASE_SECRET || "").trim(); // NAYI KEY YAHAN AAYEGI
 
 // Aapke Firebase Database ka URL
 const FIREBASE_DB_URL = "https://sabzifresh-d8742-default-rtdb.firebaseio.com";
+
+// Helper Function: Firebase URL mein Admin Password (Secret) jodne ke liye
+const getDbUrl = (path) => {
+    return FIREBASE_SECRET ? `${FIREBASE_DB_URL}${path}?auth=${FIREBASE_SECRET}` : `${FIREBASE_DB_URL}${path}`;
+};
 
 app.get('/', (req, res) => {
     res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai!' });
 });
 
 // ==========================================
-// 1. OTP BHEJNA (Using OTP_SCRIPT_URL)
+// 1. OTP BHEJNA
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
@@ -41,7 +46,7 @@ app.post('/api/otp/send', async (req, res) => {
 });
 
 // ==========================================
-// 2. OTP VERIFY KARNA (Using OTP_SCRIPT_URL)
+// 2. OTP VERIFY KARNA
 // ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
@@ -73,8 +78,8 @@ app.post('/api/order/calculate', async (req, res) => {
         }
 
         const [dbResponse, settingsResponse] = await Promise.all([
-            fetch(`${FIREBASE_DB_URL}/products.json`),
-            fetch(`${FIREBASE_DB_URL}/settings.json`)
+            fetch(getDbUrl('/products.json')),
+            fetch(getDbUrl('/settings.json'))
         ]);
 
         if (!dbResponse.ok || !settingsResponse.ok) throw new Error("Firebase fetch failed");
@@ -130,8 +135,8 @@ app.post('/api/order/place', async (req, res) => {
 
         // Dobara bill calculate karna backend par
         const [dbResponse, settingsResponse] = await Promise.all([
-            fetch(`${FIREBASE_DB_URL}/products.json`),
-            fetch(`${FIREBASE_DB_URL}/settings.json`)
+            fetch(getDbUrl('/products.json')),
+            fetch(getDbUrl('/settings.json'))
         ]);
 
         const productsDB = await dbResponse.json() || {};
@@ -161,7 +166,6 @@ app.post('/api/order/place', async (req, res) => {
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
         
-        // Agar customer ne reward use kiya hai
         if (customerDetails.usedReward && secureSubtotal > 0) {
             secureDeliveryCharge = 0;
         }
@@ -191,20 +195,19 @@ app.post('/api/order/place', async (req, res) => {
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
-        // FIREBASE MEIN SECURE WRITE KARNA (PUT REQUEST)
-        const firebaseWriteRes = await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, {
+        // FIREBASE MEIN SECURE WRITE KARNA (Ab Admin Power ke sath)
+        const firebaseWriteRes = await fetch(getDbUrl(`/orders/${orderId}.json`), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(orderData)
         });
 
-        if (!firebaseWriteRes.ok) throw new Error("Firebase save failed");
+        if (!firebaseWriteRes.ok) throw new Error("Firebase save failed - Check FIREBASE_SECRET");
 
-        // TELEGRAM NOTIFICATION (Using TELEGRAM_SCRIPT_URL)
+        // TELEGRAM NOTIFICATION
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
             
-            // Background me fetch chale jayega bina user ko wait karaye
             fetch(TELEGRAM_SCRIPT_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -212,7 +215,6 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram send failed: ", e));
         }
 
-        // Response wapas frontend ko
         res.json({ success: true, orderId: orderId, orderTimestamp: orderTimestamp });
 
     } catch (error) {
