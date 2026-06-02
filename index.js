@@ -5,15 +5,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- SECURE KEYS --- (.env file se aayenge)
+// --- SECURE KEYS --- (.env file se aayenge, GitHub par safe rahenge)
 const GOOGLE_SCRIPT_URL   = (process.env.GOOGLE_SCRIPT_URL   || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY      = (process.env.OTP_SECRET_KEY      || "").trim();
-const FIREBASE_DB_URL     = "https://sabzifresh-d8742-default-rtdb.firebaseio.com";
+
+// 👇 Dono Firebase links ab Render (.env) se aayenge 👇
+const FIREBASE_DB_URL     = (process.env.FIREBASE_DB_URL     || "").trim();
+const FIREBASE_DB_SECRET  = (process.env.FIREBASE_DB_SECRET  || "").trim(); 
 
 // --- TEST ROUTE ---
 app.get('/', (req, res) => {
-    res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai!' });
+    res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai aur 100% Secure Hai!' });
 });
 
 // ==========================================
@@ -68,13 +71,13 @@ app.post('/api/user/register', async (req, res) => {
             return res.json({ success: false, message: "Naam zaroori hai." });
         }
 
-        // Check karo user pehle se hai ya nahi
-        const existingRes = await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`);
+        // Check karo user pehle se hai ya nahi (Auth Secret ke sath)
+        const existingRes = await fetch(`${FIREBASE_DB_URL}/users/${phone}.json?auth=${FIREBASE_DB_SECRET}`);
         const existingUser = await existingRes.json();
 
         if (existingUser) {
             // User hai — sirf email/name update karo
-            await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`, {
+            await fetch(`${FIREBASE_DB_URL}/users/${phone}.json?auth=${FIREBASE_DB_SECRET}`, {
                 method: 'PATCH',
                 body: JSON.stringify({ email: email, name: name })
             });
@@ -84,7 +87,7 @@ app.post('/api/user/register', async (req, res) => {
         // Naya user — refer check karo
         let referrerPhone = null;
         if (referCode && referCode.trim() !== "") {
-            const refSnap = await fetch(`${FIREBASE_DB_URL}/referCodes/${referCode.toUpperCase()}.json`);
+            const refSnap = await fetch(`${FIREBASE_DB_URL}/referCodes/${referCode.toUpperCase()}.json?auth=${FIREBASE_DB_SECRET}`);
             const refData = await refSnap.json();
             if (!refData) return res.json({ success: false, message: "Refer code galat hai." });
             if (refData === phone) return res.json({ success: false, message: "Khud ko refer nahi kar sakte!" });
@@ -107,22 +110,22 @@ app.post('/api/user/register', async (req, res) => {
             newUser.referralStatus = "pending";
         }
 
-        await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`, {
+        await fetch(`${FIREBASE_DB_URL}/users/${phone}.json?auth=${FIREBASE_DB_SECRET}`, {
             method: 'PUT',
             body: JSON.stringify(newUser)
         });
-        await fetch(`${FIREBASE_DB_URL}/referCodes/${newCode}.json`, {
+        await fetch(`${FIREBASE_DB_URL}/referCodes/${newCode}.json?auth=${FIREBASE_DB_SECRET}`, {
             method: 'PUT',
             body: JSON.stringify(phone)
         });
 
         // Referrer ko reward do
         if (referrerPhone) {
-            const refUserRes = await fetch(`${FIREBASE_DB_URL}/users/${referrerPhone}.json`);
+            const refUserRes = await fetch(`${FIREBASE_DB_URL}/users/${referrerPhone}.json?auth=${FIREBASE_DB_SECRET}`);
             const refUserData = await refUserRes.json() || {};
             const currentDel = parseInt(refUserData.freeDeliveries) || 0;
             const expiryDate = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 din
-            await fetch(`${FIREBASE_DB_URL}/users/${referrerPhone}.json`, {
+            await fetch(`${FIREBASE_DB_URL}/users/${referrerPhone}.json?auth=${FIREBASE_DB_SECRET}`, {
                 method: 'PATCH',
                 body: JSON.stringify({
                     freeDeliveries: currentDel + 3,
@@ -154,11 +157,11 @@ app.post('/api/order/place', async (req, res) => {
             return res.json({ success: false, message: "Customer details missing." });
         }
 
-        // Firebase se products, settings, aur user ek saath lo
+        // Firebase se products, settings, aur user ek saath lo (Auth Secret lagaya)
         const [dbRes, setRes, userRes] = await Promise.all([
-            fetch(`${FIREBASE_DB_URL}/products.json`),
-            fetch(`${FIREBASE_DB_URL}/settings.json`),
-            fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`)
+            fetch(`${FIREBASE_DB_URL}/products.json?auth=${FIREBASE_DB_SECRET}`),
+            fetch(`${FIREBASE_DB_URL}/settings.json?auth=${FIREBASE_DB_SECRET}`),
+            fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json?auth=${FIREBASE_DB_SECRET}`)
         ]);
 
         const productsDB = await dbRes.json() || {};
@@ -211,6 +214,9 @@ app.post('/api/order/place', async (req, res) => {
 
         const finalExpectedTime = expectedTime || "Kal subah 7-10 baje tak";
 
+        // 🔥 SECURITY FIX: Email ko small letter mein karo taaki Firebase Rule order block na kare
+        const exactEmail = String(customerDetails.email || userData.email || '').trim().toLowerCase();
+
         const orderData = {
             id: orderId,
             timestamp: orderTimestamp,
@@ -220,7 +226,7 @@ app.post('/api/order/place', async (req, res) => {
             deliveryCharge: secureDeliveryCharge,
             customer: customerDetails.name,
             phone: customerDetails.phone,
-            email: customerDetails.email || '',
+            email: exactEmail, // Updated email
             address: customerDetails.address,
             expectedDelivery: finalExpectedTime,
             items: secureItemsArr,
@@ -228,8 +234,8 @@ app.post('/api/order/place', async (req, res) => {
             usedFreeDelivery: isRewardUsed
         };
 
-        // Firebase mein order save karo
-        await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, {
+        // Firebase mein order save karo (Auth Secret ke sath)
+        await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json?auth=${FIREBASE_DB_SECRET}`, {
             method: 'PUT',
             body: JSON.stringify(orderData)
         });
@@ -242,13 +248,12 @@ app.post('/api/order/place', async (req, res) => {
         if (isRewardUsed) {
             userUpdates.freeDeliveries = (userData.freeDeliveries || 1) - 1;
         }
-        await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`, {
+        await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json?auth=${FIREBASE_DB_SECRET}`, {
             method: 'PATCH',
             body: JSON.stringify(userUpdates)
         });
 
-        // POINT 2: Telegram notification bhejo — alag try-catch mein
-        // Agar Telegram fail bhi ho toh order nahi rukega
+        // POINT 2: Telegram notification bhejo
         try {
             const teleMessage =
                 `🚨 *NEW SECURE ORDER!* 🚨\n\n` +
@@ -268,7 +273,6 @@ app.post('/api/order/place', async (req, res) => {
                 body: new URLSearchParams({ 'message': teleMessage })
             });
         } catch (teleErr) {
-            // Telegram fail hua — order save ho chuka hai, sirf log karo
             console.error("Telegram notification fail:", teleErr.message);
         }
 
@@ -295,8 +299,8 @@ app.post('/api/order/cancel', async (req, res) => {
             return res.json({ success: false, message: "Order ID aur phone zaroori hai." });
         }
 
-        // Order Firebase se lo
-        const orderRes  = await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`);
+        // Order Firebase se lo (Auth Secret ke sath)
+        const orderRes  = await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json?auth=${FIREBASE_DB_SECRET}`);
         const orderData = await orderRes.json();
 
         if (!orderData) {
@@ -314,8 +318,8 @@ app.post('/api/order/cancel', async (req, res) => {
             return res.json({ success: false, message: "Ye order ab cancel nahi ho sakta." });
         }
 
-        // Order cancel karo
-        await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, {
+        // Order cancel karo (Auth Secret ke sath)
+        await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json?auth=${FIREBASE_DB_SECRET}`, {
             method: 'PATCH',
             body: JSON.stringify({
                 status: "Cancelled by Customer",
@@ -324,9 +328,9 @@ app.post('/api/order/cancel', async (req, res) => {
         });
 
         // Cancel count badhao
-        const userRes  = await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`);
+        const userRes  = await fetch(`${FIREBASE_DB_URL}/users/${phone}.json?auth=${FIREBASE_DB_SECRET}`);
         const userData = await userRes.json() || {};
-        await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`, {
+        await fetch(`${FIREBASE_DB_URL}/users/${phone}.json?auth=${FIREBASE_DB_SECRET}`, {
             method: 'PATCH',
             body: JSON.stringify({ cancelCount: (parseInt(userData.cancelCount) || 0) + 1 })
         });
