@@ -227,3 +227,94 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server port ${PORT} par chal raha hai`);
 });
+// ==========================================
+// 5. SECURE REGISTRATION & ANTI-FRAUD (IP TRACKING)
+// ==========================================
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        const { phone, name, email, referCode } = req.body;
+        if (!phone || !name) return res.json({ success: false, message: "Name aur phone zaroori hai" });
+
+        // 1. IP Address nikalna (Railway/Render ke load balancer ke peechhe se)
+        let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || "UNKNOWN_IP";
+        if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim(); // Agar multiple IP hon
+
+        // 2. Check karna ki is IP se kitne account ban chuke hain
+        const usersRes = await fetch(getDbUrl('/users.json'));
+        const allUsers = await usersRes.json() || {};
+        
+        let ipCount = 0;
+        let isIpSpam = false;
+
+        for (let key in allUsers) {
+            if (allUsers[key].ip === clientIp) {
+                ipCount++;
+            }
+        }
+
+        // Agar ek hi IP se pehle hi 2 account ban chuke hain (yani ye 3rd+ account hai)
+        if (ipCount >= 2) {
+            isIpSpam = true; // Spam mark kar diya
+        }
+
+        // 3. Refer Code Check
+        let referrerPhone = null;
+        let referralStatus = null;
+
+        if (referCode) {
+            const referRes = await fetch(getDbUrl('/referCodes.json'));
+            const allReferCodes = await referRes.json() || {};
+            
+            if (allReferCodes[referCode]) {
+                referrerPhone = allReferCodes[referCode];
+                if (referrerPhone === phone) {
+                    return res.json({ success: false, message: "Bhai, khud ko hi refer nahi kar sakte!" });
+                }
+                
+                // IP Spam mila toh reward block karo, warna pending rakho (1st order deliver hone tak)
+                referralStatus = isIpSpam ? "rejected_ip_spam" : "pending";
+            } else {
+                return res.json({ success: false, message: "Referral code galat hai!" });
+            }
+        }
+
+        // 4. Naya User aur uska naya Refer Code Banana
+        const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
+        const newUser = {
+            name: name,
+            email: email || "",
+            phone: phone,
+            savedVillage: "",
+            savedStreet: "",
+            referCode: newCode,
+            freeDeliveries: 0,
+            rewardExpiry: null,
+            ip: clientIp, // IP Save kar rahe hain
+            registeredAt: Date.now()
+        };
+
+        if (referrerPhone) {
+            newUser.referredBy = referrerPhone;
+            newUser.referralStatus = referralStatus;
+        }
+
+        // 5. Firebase mein secure write (Kyunki backend ke paas admin secret hai)
+        await fetch(getDbUrl(`/users/${phone}.json`), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newUser)
+        });
+
+        await fetch(getDbUrl(`/referCodes/${newCode}.json`), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(phone)
+        });
+
+        res.json({ success: true, user: newUser, isSpam: isIpSpam });
+
+    } catch (error) {
+        console.error("Registration Error:", error);
+        res.json({ success: false, message: "Server error during registration" });
+    }
+});
