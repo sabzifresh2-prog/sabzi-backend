@@ -150,6 +150,10 @@ app.post('/api/order/place', async (req, res) => {
     } catch (error) { res.json({ success: false, message: "Order save error: " + error.message }); }
 });
 
+
+// YAHI WO LINE HAI JO MISSING THI
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => { console.log(`Sabzi Fresh Backend port ${PORT} par chal raha hai`); });
 // ==========================================
 // POINT 7: ORDER CANCEL (DOUBLE SECURITY)
 // ==========================================
@@ -175,8 +179,11 @@ app.post('/api/order/cancel', async (req, res) => {
         const isEmailMatch = (dbEmail !== "" && dbEmail === reqEmail);
 
         if (!isPhoneMatch && !isEmailMatch) {
-            // YAHAN 3 DOT HAI, JISSE PATA CHALEGA NAYA CODE CHAL RAHA HAI
-            return res.json({ success: false, message: "Ye aapka order nahi hai..." });
+            // DEBUG MESSAGE: Ab ye ekdum sahi jagah par hai!
+            return res.json({ 
+                success: false, 
+                message: `OrderPhone:[${dbPhone}], AppPhone:[${reqPhone}], OrderEmail:[${dbEmail}], AppEmail:[${reqEmail}]` 
+            });
         }
 
         const cancellableStatuses = ["Packing in Progress ⏳", "Confirmed"];
@@ -210,6 +217,3 @@ app.post('/api/order/cancel', async (req, res) => {
     }
 });
 
-// YAHI WO LINE HAI JO MISSING THI
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => { console.log(`Sabzi Fresh Backend port ${PORT} par chal raha hai`); });
