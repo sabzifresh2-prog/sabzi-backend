@@ -9,7 +9,7 @@ app.use(express.json());
 const GOOGLE_SCRIPT_URL   = (process.env.GOOGLE_SCRIPT_URL   || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY      = (process.env.OTP_SECRET_KEY      || "").trim();
-const FIREBASE_DB_URL     = "https://sabzifresh-d8742-default-rtdb.firebaseio.com";
+const FIREBASE_DB_URL     = (process.env.FIREBASE_DB_URL || "").trim();
 
 // --- TEST ROUTE ---
 app.get('/', (req, res) => {
