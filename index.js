@@ -218,9 +218,27 @@ app.post('/api/order/place', async (req, res) => {
 
         if (secureSubtotal === 0) return res.json({ success: false, message: "Cart is empty" });
 
-        let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
-        if (customerDetails.usedReward && secureSubtotal > 0) secureDeliveryCharge = 0;
-        let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
+    
+let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
+let finalUsedReward = false;
+
+if (customerDetails.usedReward && secureSubtotal > 0) {
+    const userCheckRes = await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken));
+    const userData = await userCheckRes.json();
+
+    if (userData && parseInt(userData.freeDeliveries) > 0) {
+        secureDeliveryCharge = 0; 
+        finalUsedReward = true;
+
+        let newFreeDel = parseInt(userData.freeDeliveries) - 1;
+        await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ freeDeliveries: newFreeDel })
+        });
+    }
+}
+let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
         const orderTimestamp = Date.now();
