@@ -285,16 +285,14 @@ app.post('/api/order/place', async (req, res) => {
 });
 
 // ==========================================
-// POINT 7: ORDER CANCEL KARNA (Email Verification ke sath)
+// POINT 7: ORDER CANCEL (DOUBLE SECURITY: Phone OR Email)
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
-        // Yahan frontend se email bhi aayega
         const { orderId, reason, email, phone } = req.body;
 
-        // Ab email hona sabse zaroori hai
-        if (!orderId || !email) {
-            return res.json({ success: false, message: "Order ID aur Email zaroori hai." });
+        if (!orderId) {
+            return res.json({ success: false, message: "Order ID zaroori hai." });
         }
 
         const orderRes  = await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`);
@@ -302,26 +300,41 @@ app.post('/api/order/cancel', async (req, res) => {
 
         if (!orderData) return res.json({ success: false, message: "Order nahi mila." });
 
-        // SECURITY FIX: Ab Phone ki jagah Verified EMAIL match karenge
-        if (String(orderData.email).toLowerCase() !== String(email).toLowerCase()) {
-            return res.json({ success: false, message: "Ye aapka order nahi hai (Email match nahi hua)." });
+        // SECURITY: Phone ya Email mein se ek bhi match ho gaya toh cancel hoga
+        const dbPhone = String(orderData.phone || "").trim();
+        const reqPhone = String(phone || "").trim();
+        const dbEmail = String(orderData.email || "").trim().toLowerCase();
+        const reqEmail = String(email || "").trim().toLowerCase();
+
+        const isPhoneMatch = (dbPhone !== "" && dbPhone === reqPhone);
+        const isEmailMatch = (dbEmail !== "" && dbEmail === reqEmail);
+
+        if (!isPhoneMatch && !isEmailMatch) {
+            return res.json({ success: false, message: "Ye aapka order nahi hai!" });
         }
 
+        // Status Check
         const cancellableStatuses = ["Packing in Progress ⏳", "Confirmed"];
-        if (!cancellableStatuses.some(s => orderData.status.includes(s.replace(" ⏳", "")) || orderData.status === s)) {
+        const canCancel = cancellableStatuses.some(s => orderData.status.includes(s.replace(" ⏳", "")) || orderData.status === s);
+        
+        if (!canCancel) {
             return res.json({ success: false, message: "Ye order ab cancel nahi ho sakta." });
         }
 
+        // Cancel Update
         await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, {
             method: 'PATCH',
-            body: JSON.stringify({ status: "Cancelled by Customer", cancelReason: reason || "No reason given" })
+            body: JSON.stringify({
+                status: "Cancelled by Customer",
+                cancelReason: reason || "No reason given"
+            })
         });
 
-        // Cancel count badhane ke liye phone use karenge (kyunki database phone ke naam se hai)
-        if (phone) {
-            const userRes  = await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`);
+        // Cancel Count Increment
+        if (reqPhone) {
+            const userRes  = await fetch(`${FIREBASE_DB_URL}/users/${reqPhone}.json`);
             const userData = await userRes.json() || {};
-            await fetch(`${FIREBASE_DB_URL}/users/${phone}.json`, {
+            await fetch(`${FIREBASE_DB_URL}/users/${reqPhone}.json`, {
                 method: 'PATCH',
                 body: JSON.stringify({ cancelCount: (parseInt(userData.cancelCount) || 0) + 1 })
             });
@@ -329,6 +342,9 @@ app.post('/api/order/cancel', async (req, res) => {
 
         res.json({ success: true, message: "Order cancel ho gaya." });
 
-    } catch (error) { res.json({ success: false, message: "Cancel error: " + error.message }); }
+    } catch (error) {
+        res.json({ success: false, message: "Cancel error: " + error.message });
+    }
 });
 
+/
