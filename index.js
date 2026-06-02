@@ -155,14 +155,14 @@ app.post('/api/order/place', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => { console.log(`Sabzi Fresh Backend port ${PORT} par chal raha hai`); });
 // ==========================================
-// POINT 7: ORDER CANCEL (DOUBLE SECURITY)
+// POINT 7: ORDER CANCEL (ONLY EMAIL VERIFICATION)
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
-        const { orderId, reason, email, phone } = req.body;
+        const { orderId, reason, email } = req.body;
 
-        if (!orderId) {
-            return res.json({ success: false, message: "Order ID zaroori hai." });
+        if (!orderId || !email) {
+            return res.json({ success: false, message: "Order ID aur Email zaroori hai." });
         }
 
         const orderRes  = await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`);
@@ -170,20 +170,12 @@ app.post('/api/order/cancel', async (req, res) => {
 
         if (!orderData) return res.json({ success: false, message: "Order nahi mila." });
 
-        const dbPhone = String(orderData.phone || "").trim();
-        const reqPhone = String(phone || "").trim();
         const dbEmail = String(orderData.email || "").trim().toLowerCase();
         const reqEmail = String(email || "").trim().toLowerCase();
 
-        const isPhoneMatch = (dbPhone !== "" && dbPhone === reqPhone);
-        const isEmailMatch = (dbEmail !== "" && dbEmail === reqEmail);
-
-        if (!isPhoneMatch && !isEmailMatch) {
-            // DEBUG MESSAGE: Ab ye ekdum sahi jagah par hai!
-            return res.json({ 
-                success: false, 
-                message: `OrderPhone:[${dbPhone}], AppPhone:[${reqPhone}], OrderEmail:[${dbEmail}], AppEmail:[${reqEmail}]` 
-            });
+        // 100% Strict Check: Sirf Verified Email match hona chahiye
+        if (dbEmail === "" || dbEmail !== reqEmail) {
+            return res.json({ success: false, message: "Ye order aapke account se match nahi hua." });
         }
 
         const cancellableStatuses = ["Packing in Progress ⏳", "Confirmed"];
@@ -195,16 +187,14 @@ app.post('/api/order/cancel', async (req, res) => {
 
         await fetch(`${FIREBASE_DB_URL}/orders/${orderId}.json`, {
             method: 'PATCH',
-            body: JSON.stringify({
-                status: "Cancelled by Customer",
-                cancelReason: reason || "No reason given"
-            })
+            body: JSON.stringify({ status: "Cancelled by Customer", cancelReason: reason || "No reason given" })
         });
 
-        if (reqPhone) {
-            const userRes  = await fetch(`${FIREBASE_DB_URL}/users/${reqPhone}.json`);
+        // Cancel count badhane ke liye phone check karenge agar database mein use hua ho
+        if (orderData.phone) {
+            const userRes  = await fetch(`${FIREBASE_DB_URL}/users/${orderData.phone}.json`);
             const userData = await userRes.json() || {};
-            await fetch(`${FIREBASE_DB_URL}/users/${reqPhone}.json`, {
+            await fetch(`${FIREBASE_DB_URL}/users/${orderData.phone}.json`, {
                 method: 'PATCH',
                 body: JSON.stringify({ cancelCount: (parseInt(userData.cancelCount) || 0) + 1 })
             });
@@ -216,4 +206,3 @@ app.post('/api/order/cancel', async (req, res) => {
         res.json({ success: false, message: "Cancel error: " + error.message });
     }
 });
-
