@@ -6,15 +6,17 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// SECURE KEYS (.env file se aayenge)
+// SECURE KEYS (Sirf .env file se aayenge)
 // ==========================================
 const GOOGLE_SCRIPT_URL   = (process.env.GOOGLE_SCRIPT_URL   || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY      = (process.env.OTP_SECRET_KEY      || "").trim();
-const FIREBASE_DB_URL     = (process.env.FIREBASE_DB_URL     || "https://sabzifresh-d8742-default-rtdb.firebaseio.com").trim();
+// KOI BHI HARDCODED URL NAHI HAI
+const FIREBASE_DB_URL     = (process.env.FIREBASE_DB_URL     || "").trim(); 
 
 // --- TEST ROUTE ---
 app.get('/', (req, res) => {
+    if (!FIREBASE_DB_URL) return res.status(500).json({ error: "Configuration Error" });
     res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai!' });
 });
 
@@ -158,7 +160,7 @@ app.post('/api/order/place', async (req, res) => {
             deliveryCharge: secureDeliveryCharge, 
             customer: customerDetails.name, 
             phone: customerDetails.phone, 
-            email: customerDetails.email || userData.email || '', // FIX: Auto fetch email from database
+            email: customerDetails.email || userData.email || '', 
             address: customerDetails.address, 
             expectedDelivery: finalExpectedTime, 
             items: secureItemsArr, 
