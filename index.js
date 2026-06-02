@@ -6,17 +6,16 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// SECURE KEYS (Sirf .env file se aayenge)
+// SECURE KEYS (Sirf .env file se aayenge - Hidden)
 // ==========================================
 const GOOGLE_SCRIPT_URL   = (process.env.GOOGLE_SCRIPT_URL   || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY      = (process.env.OTP_SECRET_KEY      || "").trim();
-// KOI BHI HARDCODED URL NAHI HAI
 const FIREBASE_DB_URL     = (process.env.FIREBASE_DB_URL     || "").trim(); 
 
 // --- TEST ROUTE ---
 app.get('/', (req, res) => {
-    if (!FIREBASE_DB_URL) return res.status(500).json({ error: "Configuration Error" });
+    if (!FIREBASE_DB_URL) return res.status(500).json({ error: "Configuration Missing" });
     res.json({ status: 'OK', message: 'Sabzi Fresh API Live Hai!' });
 });
 
@@ -98,7 +97,7 @@ app.post('/api/user/register', async (req, res) => {
 });
 
 // ==========================================
-// POINT 4: ORDER PLACE KARNA (With Auto-Email Fix)
+// POINT 4: ORDER PLACE KARNA (Foofproof Email Finder)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -151,6 +150,9 @@ app.post('/api/order/place', async (req, res) => {
         const formattedDate = new Date(orderTimestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });
         const finalExpectedTime = expectedTime || "Kal subah 7-10 baje tak";
 
+        // 🔥 FOOLPROOF EMAIL FINDER: Har us jagah se check karega jahan se email mil sake
+        const finalEmail = (customerDetails.email || req.body.email || userData.email || "").trim().toLowerCase();
+
         const orderData = { 
             id: orderId, 
             timestamp: orderTimestamp, 
@@ -160,7 +162,7 @@ app.post('/api/order/place', async (req, res) => {
             deliveryCharge: secureDeliveryCharge, 
             customer: customerDetails.name, 
             phone: customerDetails.phone, 
-            email: customerDetails.email || userData.email || '', 
+            email: finalEmail, // Isme ab kabhi blank nahi jayega
             address: customerDetails.address, 
             expectedDelivery: finalExpectedTime, 
             items: secureItemsArr, 
@@ -175,7 +177,7 @@ app.post('/api/order/place', async (req, res) => {
         await fetch(`${FIREBASE_DB_URL}/users/${customerDetails.phone}.json`, { method: 'PATCH', body: JSON.stringify(userUpdates) });
 
         try {
-            const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n⏰ *Time:* ${formattedDate}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Bill:* ₹${secureFinalTotal}\n⏰ *Expected:* ${finalExpectedTime}`;
+            const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n⏰ *Time:* ${formattedDate}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📧 *Email:* ${finalEmail}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureAdminItemsString.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Bill:* ₹${secureFinalTotal}\n⏰ *Expected:* ${finalExpectedTime}`;
             await fetch(TELEGRAM_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ 'message': teleMessage }) });
         } catch (teleErr) { console.error("Telegram error:", teleErr.message); }
 
