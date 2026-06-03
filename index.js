@@ -107,7 +107,7 @@ app.post('/api/auth/register', async (req, res) => {
 
         // Agar Firebase ne error diya, matlab Number ya Email purana hai!
         if (!saveUserRes.ok) {
-            const myWhatsAppNumber = "919876543210"; // 👇 APNA WHATSAPP NUMBER YAHAN DAALEIN
+            const myWhatsAppNumber = "8409081468"; // 👇 APNA WHATSAPP NUMBER YAHAN DAALEIN
             const waMessage = encodeURIComponent(`Hi Sabzi Fresh team, mera mobile number ${phone} already registered bata raha hai kyonki main apna purana Email bhool gaya hoon. Kripya is number ka data reset kar dein.`);
             
             return res.json({ 
