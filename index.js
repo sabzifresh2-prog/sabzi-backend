@@ -107,7 +107,7 @@ app.post('/api/auth/register', async (req, res) => {
 
                 // Agar Firebase ne error diya, matlab Number ya Email purana hai!
         if (!saveUserRes.ok) {
-            const myWhatsAppNumber = "8409081468"; // 👇 APNA WHATSAPP NUMBER YAHAN DAALEIN
+            const myWhatsAppNumber = "+918409081468"; // 👇 APNA WHATSAPP NUMBER YAHAN DAALEIN
             
             // 1. Aapke paas aane wala WhatsApp Message (Ekdum clear aur detail mein)
             const waMessage = encodeURIComponent(`Hi Admin, main Sabzi Fresh app par apna purana Gmail bhool gaya hoon aur naya account nahi bana pa raha.\n\nMera Mobile Number: ${phone}\n\nKripya is number ka purana data delete/reset kar dijiye taaki main naya account bana sakun.`);
