@@ -105,14 +105,17 @@ app.post('/api/auth/register', async (req, res) => {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newUser)
         });
 
-        // Agar Firebase ne error diya, matlab Number ya Email purana hai!
+                // Agar Firebase ne error diya, matlab Number ya Email purana hai!
         if (!saveUserRes.ok) {
             const myWhatsAppNumber = "8409081468"; // 👇 APNA WHATSAPP NUMBER YAHAN DAALEIN
-            const waMessage = encodeURIComponent(`Hi Sabzi Fresh team, mera mobile number ${phone} already registered bata raha hai kyonki main apna purana Email bhool gaya hoon. Kripya is number ka data reset kar dein.`);
             
+            // 1. Aapke paas aane wala WhatsApp Message (Ekdum clear aur detail mein)
+            const waMessage = encodeURIComponent(`Hi Admin, main Sabzi Fresh app par apna purana Gmail bhool gaya hoon aur naya account nahi bana pa raha.\n\nMera Mobile Number: ${phone}\n\nKripya is number ka purana data delete/reset kar dijiye taaki main naya account bana sakun.`);
+            
+            // 2. Customer ko app mein dikhne wala Message
             return res.json({ 
                 success: false, 
-                message: "⚠️ Yeh Mobile Number pehle se registered hai! Agar aap apna Email bhool gaye hain, toh kripya WhatsApp par Admin ko message karein.",
+                message: "⚠️ Yeh Mobile Number pehle se registered hai! Kripya us Gmail se Login karein jo aapne pehle use kiya tha.\n\nAgar aap apna purana Gmail bhool gaye hain ya email band ho gaya hai, toh kripya Admin ko WhatsApp karein.",
                 showWhatsAppSupport: true, 
                 whatsappLink: `https://wa.me/${myWhatsAppNumber}?text=${waMessage}`
             });
