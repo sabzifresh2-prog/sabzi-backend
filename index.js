@@ -102,7 +102,7 @@ app.post('/api/auth/register', async (req, res) => {
         if (isPhoneAlreadyExists) {
             // 👇 APNA ASLI WHATSAPP NUMBER YAHAN DAALEIN (91 ke sath)
             const myWhatsAppNumber = "8409081468"; 
-            const waMessage = encodeURIComponent("Hi Sabzi Fresh team, mera mobile number already registered bata raha hai kyonki main apna purana Email bhool gaya hoon. Kripya mera account reset kar dein.");
+            const waMessage = encodeURIComponent(`Hi Sabzi Fresh team, mera mobile number ${phone} already registered bata raha hai kyonki main apna purana Email bhool gaya hoon. Kripya is number ka data reset kar dein.`);
             
             return res.json({ 
                 success: false, 
