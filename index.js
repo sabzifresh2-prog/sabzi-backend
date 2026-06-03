@@ -70,53 +70,16 @@ app.post('/api/auth/register', async (req, res) => {
     try {
         const { phone, name, email, referCode, userToken } = req.body;
         
-        // Email ko clean aur lowercase karna
         const cleanEmail = email ? email.toLowerCase().trim() : "";
 
         if (!phone || !name || !userToken || !cleanEmail) {
             return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
         }
 
-        let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || "UNKNOWN_IP";
-        if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
-
-        const usersRes = await fetch(getDbUrl('/users.json')); 
-        const allUsers = (await usersRes.json()) || {};
-        
-        let ipCount = 0;
-        let isIpSpam = false;
-        let isPhoneAlreadyExists = false;
-
-        for (let key in allUsers) {
-            if (allUsers[key].ip === clientIp) ipCount++;
-            
-            // Check kya ye Phone Number (Folder Key) pehle se hai?
-            if (key === phone.trim()) {
-                isPhoneAlreadyExists = true;
-            }
-        }
-        
-        if (ipCount >= 2) isIpSpam = true;
-
-        // 🚨 WHATSAPP SUPPORT LOGIC
-        if (isPhoneAlreadyExists) {
-            // 👇 APNA ASLI WHATSAPP NUMBER YAHAN DAALEIN (91 ke sath)
-            const myWhatsAppNumber = "8409081468"; 
-            const waMessage = encodeURIComponent(`Hi Sabzi Fresh team, mera mobile number ${phone} already registered bata raha hai kyonki main apna purana Email bhool gaya hoon. Kripya is number ka data reset kar dein.`);
-            
-            return res.json({ 
-                success: false, 
-                message: "⚠️ Yeh Mobile Number pehle se registered hai! Agar aap apna purana Email bhool gaye hain, toh kripya WhatsApp par message karein. Hum aapka data reset kar denge taaki aap naya account bana sakein.",
-                showWhatsAppSupport: true, 
-                whatsappLink: `https://wa.me/${myWhatsAppNumber}?text=${waMessage}`
-            });
-        }
-
         // Refer Code Logic
         let referrerPhone = null;
-        let referralStatus = null;
-
         if (referCode) {
+            // (Note: referCodes public hone chahiye aapke rules mein taaki ye read ho sake)
             const referRes = await fetch(getDbUrl('/referCodes.json'));
             const allReferCodes = (await referRes.json()) || {};
             
@@ -125,7 +88,6 @@ app.post('/api/auth/register', async (req, res) => {
                 if (referrerPhone === phone) {
                     return res.json({ success: false, message: "Khud ko refer nahi kar sakte!" });
                 }
-                referralStatus = isIpSpam ? "rejected_ip_spam" : "pending";
             } else {
                 return res.json({ success: false, message: "Referral code galat hai!" });
             }
@@ -134,34 +96,41 @@ app.post('/api/auth/register', async (req, res) => {
         const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
         const newUser = {
             name, email: cleanEmail, phone, savedVillage: "", savedStreet: "", referCode: newCode,
-            freeDeliveries: 0, rewardExpiry: null, ip: clientIp, registeredAt: Date.now()
+            freeDeliveries: 0, rewardExpiry: null, registeredAt: Date.now(),
+            referredBy: referrerPhone || null, referralStatus: referrerPhone ? "pending" : null
         };
 
-        if (referrerPhone) {
-            newUser.referredBy = referrerPhone;
-            newUser.referralStatus = referralStatus;
-        }
-
-        // FIREBASE WRITE: Safe entry
+        // 🚨 FIREBASE WRITE: Hum direct save kar rahe hain, Firebase khud check karega!
         const saveUserRes = await fetch(getDbUrl(`/users/${phone}.json`, userToken), {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newUser)
         });
 
+        // Agar Firebase ne error diya, matlab Number ya Email purana hai!
         if (!saveUserRes.ok) {
-            return res.json({ success: false, message: "Security Warning: Aapke Token aur Details mein mismatch hai!" });
+            const myWhatsAppNumber = "919876543210"; // 👇 APNA WHATSAPP NUMBER YAHAN DAALEIN
+            const waMessage = encodeURIComponent(`Hi Sabzi Fresh team, mera mobile number ${phone} already registered bata raha hai kyonki main apna purana Email bhool gaya hoon. Kripya is number ka data reset kar dein.`);
+            
+            return res.json({ 
+                success: false, 
+                message: "⚠️ Yeh Mobile Number pehle se registered hai! Agar aap apna Email bhool gaye hain, toh kripya WhatsApp par Admin ko message karein.",
+                showWhatsAppSupport: true, 
+                whatsappLink: `https://wa.me/${myWhatsAppNumber}?text=${waMessage}`
+            });
         }
 
+        // Refer code save karna (agar rule allow kare)
         await fetch(getDbUrl(`/referCodes/${newCode}.json`, userToken), {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(phone)
         });
 
-        res.json({ success: true, user: newUser, isSpam: isIpSpam });
+        res.json({ success: true, user: newUser });
 
     } catch (error) {
         console.error("Register Error:", error);
         res.json({ success: false, message: "Server Error: Kripya thodi der baad try karein." });
     }
 });
+
 
 // ==========================================
 // 4. 🛒 SECURE BILL CALCULATOR (Bina Order Place kiye)
