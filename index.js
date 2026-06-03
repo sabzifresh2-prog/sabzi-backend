@@ -64,36 +64,58 @@ app.post('/api/otp/verify', async (req, res) => {
 });
 
 // ==========================================
-// 3. 🛡️ SECURE REGISTRATION & IP TRACKING
+// 3. 🛡️ SECURE REGISTRATION & WHATSAPP SUPPORT
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
     try {
-        // NAYA: Frontend se userToken aayega taaki Firebase usko allow kare
         const { phone, name, email, referCode, userToken } = req.body;
         
-        if (!phone || !name || !userToken) {
-            return res.json({ success: false, message: "Details aur Token zaroori hai" });
+        // Email ko clean aur lowercase karna
+        const cleanEmail = email ? email.toLowerCase().trim() : "";
+
+        if (!phone || !name || !userToken || !cleanEmail) {
+            return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
         }
 
-        // IP Tracking for Anti-Fraud
         let clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || "UNKNOWN_IP";
         if (clientIp.includes(',')) clientIp = clientIp.split(',')[0].trim();
 
-        // Check for IP Spam (Bina token ke padh sakte hain, agar rules allow karein)
         const usersRes = await fetch(getDbUrl('/users.json')); 
         const allUsers = (await usersRes.json()) || {};
         
         let ipCount = 0;
         let isIpSpam = false;
+        let isPhoneAlreadyExists = false;
+
         for (let key in allUsers) {
             if (allUsers[key].ip === clientIp) ipCount++;
+            
+            // Check kya ye Phone Number (Folder Key) pehle se hai?
+            if (key === phone.trim()) {
+                isPhoneAlreadyExists = true;
+            }
         }
+        
         if (ipCount >= 2) isIpSpam = true;
 
+        // 🚨 WHATSAPP SUPPORT LOGIC
+        if (isPhoneAlreadyExists) {
+            // 👇 APNA ASLI WHATSAPP NUMBER YAHAN DAALEIN (91 ke sath)
+            const myWhatsAppNumber = "8409081468"; 
+            const waMessage = encodeURIComponent("Hi Sabzi Fresh team, mera mobile number already registered bata raha hai kyonki main apna purana Email bhool gaya hoon. Kripya mera account reset kar dein.");
+            
+            return res.json({ 
+                success: false, 
+                message: "⚠️ Yeh Mobile Number pehle se registered hai! Agar aap apna purana Email bhool gaye hain, toh kripya WhatsApp par message karein. Hum aapka data reset kar denge taaki aap naya account bana sakein.",
+                showWhatsAppSupport: true, 
+                whatsappLink: `https://wa.me/${myWhatsAppNumber}?text=${waMessage}`
+            });
+        }
+
+        // Refer Code Logic
         let referrerPhone = null;
         let referralStatus = null;
 
-        // Refer Code check karna
         if (referCode) {
             const referRes = await fetch(getDbUrl('/referCodes.json'));
             const allReferCodes = (await referRes.json()) || {};
@@ -111,7 +133,7 @@ app.post('/api/auth/register', async (req, res) => {
 
         const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
         const newUser = {
-            name, email, phone, savedVillage: "", savedStreet: "", referCode: newCode,
+            name, email: cleanEmail, phone, savedVillage: "", savedStreet: "", referCode: newCode,
             freeDeliveries: 0, rewardExpiry: null, ip: clientIp, registeredAt: Date.now()
         };
 
@@ -120,14 +142,15 @@ app.post('/api/auth/register', async (req, res) => {
             newUser.referralStatus = referralStatus;
         }
 
-        // FIREBASE WRITE: Yahan userToken ka use ho raha hai (Aapke rules isko check karenge)
+        // FIREBASE WRITE: Safe entry
         const saveUserRes = await fetch(getDbUrl(`/users/${phone}.json`, userToken), {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newUser)
         });
 
-        if (!saveUserRes.ok) throw new Error("Firebase Rules ne User save karne se rok diya.");
+        if (!saveUserRes.ok) {
+            return res.json({ success: false, message: "Security Warning: Aapke Token aur Details mein mismatch hai!" });
+        }
 
-        // (Agar aapke rules allow karein, toh referCodes mein bhi save karein)
         await fetch(getDbUrl(`/referCodes/${newCode}.json`, userToken), {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(phone)
         });
@@ -136,7 +159,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     } catch (error) {
         console.error("Register Error:", error);
-        res.json({ success: false, message: error.message });
+        res.json({ success: false, message: "Server Error: Kripya thodi der baad try karein." });
     }
 });
 
