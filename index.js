@@ -211,7 +211,7 @@ app.post('/api/order/place', async (req, res) => {
 
         let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
         
-        for (let itemId in cartItems) {
+                for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
             let asliProduct = productsDB[itemId];
             if (asliProduct && !isNaN(qty) && qty > 0) {
@@ -219,20 +219,22 @@ app.post('/api/order/place', async (req, res) => {
                 secureSubtotal += itemTotal;
                 
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-                let itemQtyText = asliProduct.qtyText || "1 Kg"; // ✅ NAYA UNIT LOGIC
+                let itemQtyText = asliProduct.qtyText || "1 Kg"; 
                 
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
                 
-                // ✅ NAYA FORMAT JO FIREBASE MEIN SAVE HOGA
+                // ✅ PERFECTED FORMAT
                 itemsObj.push({ 
                     name: itemName, 
                     nameHi: asliProduct.nameHi || "", 
-                    price: asliProduct.price,         
+                    price: itemTotal,   // Customer App ko theek rakhne ke liye Total Price 
+                    basePrice: asliProduct.price, 
                     qty: qty,                         
                     qtyText: itemQtyText              
                 });
             }
         }
+
 
         if (secureSubtotal === 0) return res.json({ success: false, message: "Cart is empty" });
 
