@@ -154,16 +154,29 @@ app.post('/api/order/calculate', async (req, res) => {
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
         let secureSubtotal = 0; let secureItemsList = [];
 
-        for (let itemId in cartItems) {
-            let qty = parseFloat(cartItems[itemId]); 
-            let asliProduct = productsDB[itemId]; 
-            if (asliProduct && !isNaN(qty) && qty > 0) {
-                let itemTotal = asliProduct.price * qty;
-                secureSubtotal += itemTotal;
-                let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-                secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
-            }
-        }
+    for (let itemId in cartItems) {
+    let qty = parseFloat(cartItems[itemId]);
+    let asliProduct = productsDB[itemId];
+    if (asliProduct && !isNaN(qty) && qty > 0) {
+        let itemTotal = asliProduct.price * qty;
+        secureSubtotal += itemTotal;
+        
+        let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
+        let itemQtyText = asliProduct.qtyText || "1 Kg"; // Unit nikal rahe hain (Gram/Kg)
+        
+        secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
+        
+        // ✅ NAYA: Admin panel ko ab Qty, QtyText aur Unit Price sab milega
+        itemsObj.push({ 
+            name: itemName, 
+            nameHi: asliProduct.nameHi || "", // Hindi naam bhi bhej rahe hain
+            price: asliProduct.price,         // 1 unit ka daam
+            qty: qty,                         // Kitna liya (0.5, 1, 2)
+            qtyText: itemQtyText              // Unit (500 Gram, 1 Kg)
+        });
+    }
+}
+
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
         res.json({
