@@ -194,14 +194,12 @@ app.post('/api/order/calculate', async (req, res) => {
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
-        // NAYA: Frontend se Customer ka VIP Pass (userToken) aayega
         const { cartItems, customerDetails, userToken } = req.body;
 
         if (!cartItems || !customerDetails || !customerDetails.phone || !userToken) {
             return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
         }
 
-        // Dobara bill calculate karna
         const [dbResponse, settingsResponse] = await Promise.all([
             fetch(getDbUrl('/products.json')), fetch(getDbUrl('/settings.json'))
         ]);
@@ -212,41 +210,52 @@ app.post('/api/order/place', async (req, res) => {
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
 
         let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
+        
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
             let asliProduct = productsDB[itemId];
             if (asliProduct && !isNaN(qty) && qty > 0) {
                 let itemTotal = asliProduct.price * qty;
                 secureSubtotal += itemTotal;
+                
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
+                let itemQtyText = asliProduct.qtyText || "1 Kg"; // ✅ NAYA UNIT LOGIC
+                
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
-                itemsObj.push({ name: itemName, price: itemTotal });
+                
+                // ✅ NAYA FORMAT JO FIREBASE MEIN SAVE HOGA
+                itemsObj.push({ 
+                    name: itemName, 
+                    nameHi: asliProduct.nameHi || "", 
+                    price: asliProduct.price,         
+                    qty: qty,                         
+                    qtyText: itemQtyText              
+                });
             }
         }
 
         if (secureSubtotal === 0) return res.json({ success: false, message: "Cart is empty" });
 
-    
-let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
-let finalUsedReward = false;
+        let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
+        let finalUsedReward = false;
 
-if (customerDetails.usedReward && secureSubtotal > 0) {
-    const userCheckRes = await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken));
-    const userData = await userCheckRes.json();
+        if (customerDetails.usedReward && secureSubtotal > 0) {
+            const userCheckRes = await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken));
+            const userData = await userCheckRes.json();
 
-    if (userData && parseInt(userData.freeDeliveries) > 0) {
-        secureDeliveryCharge = 0; 
-        finalUsedReward = true;
+            if (userData && parseInt(userData.freeDeliveries) > 0) {
+                secureDeliveryCharge = 0; 
+                finalUsedReward = true;
 
-        let newFreeDel = parseInt(userData.freeDeliveries) - 1;
-        await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken), {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ freeDeliveries: newFreeDel })
-        });
-    }
-}
-let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
+                let newFreeDel = parseInt(userData.freeDeliveries) - 1;
+                await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken), {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ freeDeliveries: newFreeDel })
+                });
+            }
+        }
+        let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
         const orderTimestamp = Date.now();
@@ -262,8 +271,6 @@ let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
-        // 🚨 FIREBASE WRITE: Yahan userToken ka use hua hai! 
-        // Firebase ab check karega ki "auth.token.email == orderData.email" hai ya nahi.
         const firebaseWriteRes = await fetch(getDbUrl(`/orders/${orderId}.json`, userToken), {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(orderData)
         });
@@ -272,7 +279,6 @@ let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
             throw new Error("Firebase Rules Block: Aapka token galat hai ya Order ka email match nahi kar raha!");
         }
 
-        // TELEGRAM NOTIFICATION
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
             fetch(TELEGRAM_SCRIPT_URL, {
