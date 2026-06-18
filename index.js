@@ -38,23 +38,15 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// 1. 📩 OTP BHEJNA (POST Request - Band Dibba)
+// 1. 📩 OTP BHEJNA (Old GET Request)
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
         const { email } = req.body;
         if (!email) return res.json({ success: false, message: "Email required" });
 
-        const response = await fetch(OTP_SCRIPT_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: "send_otp",
-                email: email,
-                secret: OTP_SECRET_KEY
-            })
-        });
-        
+        const url = `${OTP_SCRIPT_URL}?action=send_otp&email=${encodeURIComponent(email)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
+        const response = await fetch(url);
         const text = await response.text();
         
         try { res.json(JSON.parse(text)); } 
@@ -65,24 +57,15 @@ app.post('/api/otp/send', async (req, res) => {
 });
 
 // ==========================================
-// 2. ✅ OTP VERIFY KARNA (POST Request - Band Dibba)
+// 2. ✅ OTP VERIFY KARNA (Old GET Request)
 // ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
         const { email, code } = req.body;
         if (!email || !code) return res.json({ success: false, message: "Email aur code zaroori hai" });
 
-        const response = await fetch(OTP_SCRIPT_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: "verify_otp",
-                email: email,
-                code: code,
-                secret: OTP_SECRET_KEY
-            })
-        });
-        
+        const url = `${OTP_SCRIPT_URL}?action=verify_otp&email=${encodeURIComponent(email)}&code=${encodeURIComponent(code)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
+        const response = await fetch(url);
         const text = await response.text();
         
         try { res.json(JSON.parse(text)); } 
