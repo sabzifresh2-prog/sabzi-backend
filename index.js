@@ -16,7 +16,20 @@ const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 // ✅ NAYA: Aapki upload ki hui JSON file ko link kiya gaya hai
 // Dhyan rakhein: JSON file ka naam bilkul match karna chahiye, jaise ki 'serviceAccountKey.json'
 try {
-    const serviceAccount = require('./serviceAccountKey.json'); 
+    // Render ke Environment Variable se data uthana
+const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+try {
+    const serviceAccount = JSON.parse(serviceAccountRaw); 
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        databaseURL: "https://sabzifresh-d8742-default-rtdb.firebaseio.com"
+    });
+    console.log("✅ Firebase Admin Variable se successfully start ho gaya!");
+} catch (error) {
+    console.error("🚨 ERROR: Variable theek se load nahi hua!", error);
+}
+
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
         databaseURL: "https://sabzifresh-d8742-default-rtdb.firebaseio.com"
