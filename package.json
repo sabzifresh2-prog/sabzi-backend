@@ -1,12 +1,13 @@
 {
-  "name": "sabzi-backend",
+  "name": "sabzi-fresh-api",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node server.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "firebase-admin": "^11.8.0"
   }
 }
