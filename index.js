@@ -7,27 +7,28 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// ⚙️ ENVIRONMENT VARIABLES & FIREBASE ADMIN
+// ⚙️ ENVIRONMENT VARIABLES (Server Settings)
 // ==========================================
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// ✅ NAYA: Aapki upload ki hui JSON file ko link kiya gaya hai
-// Dhyan rakhein: JSON file ka naam bilkul match karna chahiye, jaise ki 'serviceAccountKey.json'
-try {
-    // Render ke Environment Variable se data uthana
+// ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
 try {
-    const serviceAccount = JSON.parse(serviceAccountRaw); 
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        databaseURL: "https://sabzifresh-d8742-default-rtdb.firebaseio.com"
-    });
-    console.log("✅ Firebase Admin Variable se successfully start ho gaya!");
+    if (serviceAccountRaw) {
+        const serviceAccount = JSON.parse(serviceAccountRaw);
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            databaseURL: "https://sabzifresh-d8742-default-rtdb.firebaseio.com"
+        });
+        console.log("✅ Firebase Admin Variable se successfully start ho gaya!");
+    } else {
+        console.warn("🚨 WARNING: FIREBASE_SERVICE_ACCOUNT_JSON variable missing hai!");
+    }
 } catch (error) {
-    console.error("🚨 ERROR: Variable theek se load nahi hua!", error);
+    console.error("🚨 ERROR: JSON Parse fail ho gaya. Variable theek se load nahi hua.", error);
 }
 
 const db = admin.database();
@@ -111,7 +112,6 @@ app.post('/api/auth/register', async (req, res) => {
             referredBy: referrerPhone || null, referralStatus: referrerPhone ? "pending" : null
         };
 
-        // ✅ FIREBASE CHECK: Kya user pehle se hai?
         const userSnap = await db.ref(`/users/${phone}`).once('value');
         if (userSnap.exists()) {
             const myWhatsAppNumber = "+918409081468"; 
@@ -125,7 +125,6 @@ app.post('/api/auth/register', async (req, res) => {
             });
         }
 
-        // ✅ DATA SAVE KARNA (Direct Admin Power se)
         await db.ref(`/users/${phone}`).set(newUser);
         await db.ref(`/referCodes/${newCode}`).set(phone);
 
@@ -145,7 +144,6 @@ app.post('/api/order/calculate', async (req, res) => {
         const { cartItems } = req.body; 
         if (!cartItems) return res.json({ success: false, message: "Cart khali hai" });
 
-        // ✅ FETCH FROM DB
         const productsDB = (await db.ref('/products').once('value')).val() || {};
         const settingsDB = (await db.ref('/settings').once('value')).val() || {};
 
@@ -235,7 +233,6 @@ app.post('/api/order/place', async (req, res) => {
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
 
-        // ✅ CHECK USER REWARDS
         if (customerDetails.usedReward && secureSubtotal > 0) {
             const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
 
@@ -261,7 +258,6 @@ app.post('/api/order/place', async (req, res) => {
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
-        // ✅ DIRECT ORDER SAVE (Bina Client Rules ke)
         await db.ref(`/orders/${orderId}`).set(orderData);
 
         if(TELEGRAM_SCRIPT_URL) {
@@ -288,7 +284,6 @@ app.post('/api/order/update-status', async (req, res) => {
         const { orderId, newStatus, adminToken } = req.body;
         if (!orderId || !newStatus || !adminToken) return res.json({ success: false, message: "Missing info" });
 
-        // ✅ ADMIN CHECK
         const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
         if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') throw new Error("Aapko Admin access nahi hai!");
 
@@ -388,7 +383,7 @@ app.post('/api/order/cancel', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Server port ${PORT} par chal raha hai`);
 });
