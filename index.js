@@ -7,20 +7,13 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// ⚙️ ENVIRONMENT VARIABLES (100% Secure)
+// ⚙️ ENVIRONMENT VARIABLES (Server Settings)
 // ==========================================
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// 🕵️‍♂️ DEBUG LOG (Render logs mein check karne ke liye)
-if (OTP_SECRET_KEY.length > 0) {
-    console.log("✅ SUCCESS: Render ko OTP Secret Key mil gayi hai!");
-} else {
-    console.log("🚨 ERROR: Render ko OTP Secret Key NAHI mili! Variable khali hai.");
-}
-
-// ✅ Render ke Environment Variable se JSON (Master Key) read karna
+// ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
 try {
@@ -41,11 +34,11 @@ try {
 const db = admin.database();
 
 app.get('/', (req, res) => {
-    res.json({ status: 'OK', message: 'Sabzi Fresh API 100% Secure System ke sath Live Hai!' });
+    res.json({ status: 'OK', message: 'Sabzi Fresh API VIP Lock ke sath Live Hai!' });
 });
 
 // ==========================================
-// 1. 📩 OTP BHEJNA (Old GET Request Method)
+// 1. 📩 OTP BHEJNA (Google Script ke through)
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
@@ -83,7 +76,7 @@ app.post('/api/otp/verify', async (req, res) => {
 });
 
 // ==========================================
-// 3. 🛡️ SECURE REGISTRATION (VIP Pass Check)
+// 3. 🛡️ SECURE REGISTRATION & WHATSAPP SUPPORT
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -94,7 +87,7 @@ app.post('/api/auth/register', async (req, res) => {
             return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
         }
 
-        // ✅ VIP PASS VERIFY
+        // ✅ TOKEN VERIFY: Taki koi fake token na bhej de
         await admin.auth().verifyIdToken(userToken);
 
         let referrerPhone = null;
@@ -139,7 +132,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     } catch (error) {
         console.error("Register Error:", error);
-        res.json({ success: false, message: "Server Error ya Invalid VIP Token." });
+        res.json({ success: false, message: "Server Error ya Invalid Token." });
     }
 });
 
@@ -192,7 +185,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER 
+// 5. 🚀 SECURE ORDER MANAGER
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -202,6 +195,7 @@ app.post('/api/order/place', async (req, res) => {
             return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
         }
 
+        // ✅ TOKEN VERIFY KARO
         await admin.auth().verifyIdToken(userToken);
 
         const productsDB = (await db.ref('/products').once('value')).val() || {};
