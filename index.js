@@ -7,11 +7,18 @@ app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// ⚙️ ENVIRONMENT VARIABLES (Server Settings)
+// ⚙️ ENVIRONMENT VARIABLES (100% Secure)
 // ==========================================
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
+
+// 🕵️‍♂️ DEBUG LOG (Render logs mein check karne ke liye)
+if (OTP_SECRET_KEY.length > 0) {
+    console.log("✅ SUCCESS: Render ko OTP Secret Key mil gayi hai!");
+} else {
+    console.log("🚨 ERROR: Render ko OTP Secret Key NAHI mili! Variable khali hai.");
+}
 
 // ✅ Render ke Environment Variable se JSON (Master Key) read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -38,7 +45,7 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// 1. 📩 OTP BHEJNA (Old GET Request)
+// 1. 📩 OTP BHEJNA (Old GET Request Method)
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
@@ -57,7 +64,7 @@ app.post('/api/otp/send', async (req, res) => {
 });
 
 // ==========================================
-// 2. ✅ OTP VERIFY KARNA (Old GET Request)
+// 2. ✅ OTP VERIFY KARNA
 // ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
@@ -87,7 +94,7 @@ app.post('/api/auth/register', async (req, res) => {
             return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
         }
 
-        // ✅ VIP PASS VERIFY (Kahin hacker nakli token toh nahi laya?)
+        // ✅ VIP PASS VERIFY
         await admin.auth().verifyIdToken(userToken);
 
         let referrerPhone = null;
@@ -185,7 +192,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (VIP Pass Check)
+// 5. 🚀 SECURE ORDER MANAGER 
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -195,7 +202,6 @@ app.post('/api/order/place', async (req, res) => {
             return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
         }
 
-        // ✅ VIP PASS VERIFY KARO
         await admin.auth().verifyIdToken(userToken);
 
         const productsDB = (await db.ref('/products').once('value')).val() || {};
@@ -347,7 +353,7 @@ app.post('/api/admin/give-reward', async (req, res) => {
 });
 
 // ==========================================
-// 8. 🚫 SECURE ORDER CANCEL (VIP Pass Check)
+// 8. 🚫 SECURE ORDER CANCEL
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
