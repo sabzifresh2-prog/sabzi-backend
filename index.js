@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const admin = require('firebase-admin'); // ✅ NAYA: Firebase Admin SDK joda gaya
 
 const app = express();
 app.use(cors());
@@ -8,18 +9,22 @@ app.use(express.json());
 // ==========================================
 // ⚙️ ENVIRONMENT VARIABLES (Server Settings)
 // ==========================================
-// Dhyan de: Yahan se FIREBASE_SECRET hata diya gaya hai!
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// Aapke Firebase Database ka URL
-const FIREBASE_DB_URL = "https://sabzifresh-d8742-default-rtdb.firebaseio.com";
+// ✅ NAYA: JSON FILE SETUP (Render Environment Variable se)
+const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+if (serviceAccountRaw) {
+    admin.initializeApp({
+        credential: admin.credential.cert(JSON.parse(serviceAccountRaw)),
+        databaseURL: "https://sabzifresh-d8742-default-rtdb.firebaseio.com"
+    });
+} else {
+    console.warn("WARNING: FIREBASE_SERVICE_ACCOUNT_JSON missing hai!");
+}
 
-// Helper Function: Agar request mein User Token hai, toh usko URL mein jod dega
-const getDbUrl = (path, token = null) => {
-    return token ? `${FIREBASE_DB_URL}${path}?auth=${token}` : `${FIREBASE_DB_URL}${path}`;
-};
+const db = admin.database();
 
 app.get('/', (req, res) => {
     res.json({ status: 'OK', message: 'Sabzi Fresh API VIP Lock ke sath Live Hai!' });
@@ -69,19 +74,19 @@ app.post('/api/otp/verify', async (req, res) => {
 app.post('/api/auth/register', async (req, res) => {
     try {
         const { phone, name, email, referCode, userToken } = req.body;
-        
         const cleanEmail = email ? email.toLowerCase().trim() : "";
 
         if (!phone || !name || !userToken || !cleanEmail) {
             return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
         }
 
-        // Refer Code Logic
+        // ✅ TOKEN VERIFY: Taki koi fake token na bhej de
+        await admin.auth().verifyIdToken(userToken);
+
         let referrerPhone = null;
         if (referCode) {
-            // (Note: referCodes public hone chahiye aapke rules mein taaki ye read ho sake)
-            const referRes = await fetch(getDbUrl('/referCodes.json'));
-            const allReferCodes = (await referRes.json()) || {};
+            const referSnap = await db.ref('/referCodes').once('value');
+            const allReferCodes = referSnap.val() || {};
             
             if (allReferCodes[referCode]) {
                 referrerPhone = allReferCodes[referCode];
@@ -100,19 +105,12 @@ app.post('/api/auth/register', async (req, res) => {
             referredBy: referrerPhone || null, referralStatus: referrerPhone ? "pending" : null
         };
 
-        // 🚨 FIREBASE WRITE: Hum direct save kar rahe hain, Firebase khud check karega!
-        const saveUserRes = await fetch(getDbUrl(`/users/${phone}.json`, userToken), {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newUser)
-        });
-
-                // Agar Firebase ne error diya, matlab Number ya Email purana hai!
-        if (!saveUserRes.ok) {
-            const myWhatsAppNumber = "+918409081468"; // 👇 APNA WHATSAPP NUMBER YAHAN DAALEIN
-            
-            // 1. Aapke paas aane wala WhatsApp Message (Ekdum clear aur detail mein)
+        // ✅ FIREBASE CHECK: Kya user pehle se hai?
+        const userSnap = await db.ref(`/users/${phone}`).once('value');
+        if (userSnap.exists()) {
+            const myWhatsAppNumber = "+918409081468"; 
             const waMessage = encodeURIComponent(`Hi Admin, main Sabzi Fresh app par apna purana Gmail bhool gaya hoon aur naya account nahi bana pa raha.\n\nMera Mobile Number: ${phone}\n\nKripya is number ka purana data delete/reset kar dijiye taaki main naya account bana sakun.`);
             
-            // 2. Customer ko app mein dikhne wala Message
             return res.json({ 
                 success: false, 
                 message: "⚠️ Yeh Mobile Number pehle se registered hai! Kripya us Gmail se Login karein jo aapne pehle use kiya tha.\n\nAgar aap apna purana Gmail bhool gaye hain ya email band ho gaya hai, toh kripya Admin ko WhatsApp karein.",
@@ -121,62 +119,55 @@ app.post('/api/auth/register', async (req, res) => {
             });
         }
 
-        // Refer code save karna (agar rule allow kare)
-        await fetch(getDbUrl(`/referCodes/${newCode}.json`, userToken), {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(phone)
-        });
+        // ✅ DATA SAVE KARNA (Direct Admin Power se)
+        await db.ref(`/users/${phone}`).set(newUser);
+        await db.ref(`/referCodes/${newCode}`).set(phone);
 
         res.json({ success: true, user: newUser });
 
     } catch (error) {
         console.error("Register Error:", error);
-        res.json({ success: false, message: "Server Error: Kripya thodi der baad try karein." });
+        res.json({ success: false, message: "Server Error ya Invalid Token." });
     }
 });
 
-
 // ==========================================
-// 4. 🛒 SECURE BILL CALCULATOR (Bina Order Place kiye)
+// 4. 🛒 SECURE BILL CALCULATOR
 // ==========================================
 app.post('/api/order/calculate', async (req, res) => {
     try {
         const { cartItems } = req.body; 
         if (!cartItems) return res.json({ success: false, message: "Cart khali hai" });
 
-        const [dbResponse, settingsResponse] = await Promise.all([
-            fetch(getDbUrl('/products.json')), fetch(getDbUrl('/settings.json'))
-        ]);
-
-        const productsDB = (await dbResponse.json()) || {};
-        const settingsDB = (await settingsResponse.json()) || {};
+        // ✅ FETCH FROM DB
+        const productsDB = (await db.ref('/products').once('value')).val() || {};
+        const settingsDB = (await db.ref('/settings').once('value')).val() || {};
 
         let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
-        let secureSubtotal = 0; let secureItemsList = [];
+        let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
 
-    for (let itemId in cartItems) {
-    let qty = parseFloat(cartItems[itemId]);
-    let asliProduct = productsDB[itemId];
-    if (asliProduct && !isNaN(qty) && qty > 0) {
-        let itemTotal = asliProduct.price * qty;
-        secureSubtotal += itemTotal;
-        
-        let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-        let itemQtyText = asliProduct.qtyText || "1 Kg"; // Unit nikal rahe hain (Gram/Kg)
-        
-        secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
-        
-        // ✅ NAYA: Admin panel ko ab Qty, QtyText aur Unit Price sab milega
-        itemsObj.push({ 
-            name: itemName, 
-            nameHi: asliProduct.nameHi || "", // Hindi naam bhi bhej rahe hain
-            price: asliProduct.price,         // 1 unit ka daam
-            qty: qty,                         // Kitna liya (0.5, 1, 2)
-            qtyText: itemQtyText              // Unit (500 Gram, 1 Kg)
-        });
-    }
-}
-
+        for (let itemId in cartItems) {
+            let qty = parseFloat(cartItems[itemId]);
+            let asliProduct = productsDB[itemId];
+            if (asliProduct && !isNaN(qty) && qty > 0) {
+                let itemTotal = asliProduct.price * qty;
+                secureSubtotal += itemTotal;
+                
+                let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
+                let itemQtyText = asliProduct.qtyText || "1 Kg"; 
+                
+                secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
+                
+                itemsObj.push({ 
+                    name: itemName, 
+                    nameHi: asliProduct.nameHi || "", 
+                    price: asliProduct.price,         
+                    qty: qty,                         
+                    qtyText: itemQtyText              
+                });
+            }
+        }
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
         res.json({
@@ -190,7 +181,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (User Token ke sath)
+// 5. 🚀 SECURE ORDER MANAGER
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -200,18 +191,18 @@ app.post('/api/order/place', async (req, res) => {
             return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
         }
 
-        const [dbResponse, settingsResponse] = await Promise.all([
-            fetch(getDbUrl('/products.json')), fetch(getDbUrl('/settings.json'))
-        ]);
-        const productsDB = (await dbResponse.json()) || {};
-        const settingsDB = (await settingsResponse.json()) || {};
+        // ✅ TOKEN VERIFY KARO
+        await admin.auth().verifyIdToken(userToken);
+
+        const productsDB = (await db.ref('/products').once('value')).val() || {};
+        const settingsDB = (await db.ref('/settings').once('value')).val() || {};
 
         let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
 
         let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
         
-                for (let itemId in cartItems) {
+        for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
             let asliProduct = productsDB[itemId];
             if (asliProduct && !isNaN(qty) && qty > 0) {
@@ -223,11 +214,10 @@ app.post('/api/order/place', async (req, res) => {
                 
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
                 
-                // ✅ PERFECTED FORMAT
                 itemsObj.push({ 
                     name: itemName, 
                     nameHi: asliProduct.nameHi || "", 
-                    price: itemTotal,   // Customer App ko theek rakhne ke liye Total Price 
+                    price: itemTotal,   
                     basePrice: asliProduct.price, 
                     qty: qty,                         
                     qtyText: itemQtyText              
@@ -235,26 +225,18 @@ app.post('/api/order/place', async (req, res) => {
             }
         }
 
-
         if (secureSubtotal === 0) return res.json({ success: false, message: "Cart is empty" });
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
-        let finalUsedReward = false;
 
+        // ✅ CHECK USER REWARDS
         if (customerDetails.usedReward && secureSubtotal > 0) {
-            const userCheckRes = await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken));
-            const userData = await userCheckRes.json();
+            const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
 
             if (userData && parseInt(userData.freeDeliveries) > 0) {
                 secureDeliveryCharge = 0; 
-                finalUsedReward = true;
-
                 let newFreeDel = parseInt(userData.freeDeliveries) - 1;
-                await fetch(getDbUrl(`/users/${customerDetails.phone}.json`, userToken), {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ freeDeliveries: newFreeDel })
-                });
+                await db.ref(`/users/${customerDetails.phone}`).update({ freeDeliveries: newFreeDel });
             }
         }
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
@@ -273,13 +255,8 @@ app.post('/api/order/place', async (req, res) => {
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
-        const firebaseWriteRes = await fetch(getDbUrl(`/orders/${orderId}.json`, userToken), {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(orderData)
-        });
-
-        if (!firebaseWriteRes.ok) {
-            throw new Error("Firebase Rules Block: Aapka token galat hai ya Order ka email match nahi kar raha!");
-        }
+        // ✅ DIRECT ORDER SAVE (Bina Client Rules ke)
+        await db.ref(`/orders/${orderId}`).set(orderData);
 
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
@@ -293,59 +270,40 @@ app.post('/api/order/place', async (req, res) => {
 
     } catch (error) {
         console.error("Order Manager Error:", error);
-        res.json({ success: false, message: error.message });
+        res.json({ success: false, message: "VIP Token Invalid ya Order Fail ho gaya" });
     }
 });
 
 // ==========================================
-// 6. 🎁 ORDER DELIVER HONE PAR REWARD DENA (Admin Only)
+// 6. 🎁 ORDER DELIVER HONE PAR REWARD DENA
 // ==========================================
 app.post('/api/order/update-status', async (req, res) => {
     try {
-        // Yahan Admin Apna Token (neerajkumar00999666@gmail.com) bhejega
         const { orderId, newStatus, adminToken } = req.body;
+        if (!orderId || !newStatus || !adminToken) return res.json({ success: false, message: "Missing info" });
 
-        if (!orderId || !newStatus || !adminToken) {
-            return res.json({ success: false, message: "Order ID, Status aur Admin Token zaroori hai" });
-        }
+        // ✅ ADMIN CHECK
+        const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
+        if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') throw new Error("Aapko Admin access nahi hai!");
 
-        // Order status update karna (Admin Token ke sath)
-        const statusRes = await fetch(getDbUrl(`/orders/${orderId}/status.json`, adminToken), {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newStatus)
-        });
+        await db.ref(`/orders/${orderId}`).update({ status: newStatus });
 
-        if (!statusRes.ok) throw new Error("Aapko Admin access nahi hai!");
-
-        // Reward Logic
         if (newStatus === "Delivered") {
-            const orderRes = await fetch(getDbUrl(`/orders/${orderId}.json`, adminToken));
-            const orderData = await orderRes.json();
-
+            const orderData = (await db.ref(`/orders/${orderId}`).once('value')).val();
             if (orderData && orderData.phone) {
                 const customerPhone = orderData.phone;
-                const userRes = await fetch(getDbUrl(`/users/${customerPhone}.json`, adminToken));
-                const userData = await userRes.json();
+                const userData = (await db.ref(`/users/${customerPhone}`).once('value')).val();
 
                 if (userData && userData.referredBy && userData.referralStatus === "pending") {
                     const referrerPhone = userData.referredBy;
-                    const referrerRes = await fetch(getDbUrl(`/users/${referrerPhone}.json`, adminToken));
-                    const referrerData = await referrerRes.json();
+                    const referrerData = (await db.ref(`/users/${referrerPhone}`).once('value')).val();
 
                     if (referrerData) {
                         let currentFreeDel = parseInt(referrerData.freeDeliveries) || 0;
                         let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); 
 
-                        // Referrer ko 3 delivery dena
-                        await fetch(getDbUrl(`/users/${referrerPhone}.json`, adminToken), {
-                            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ freeDeliveries: currentFreeDel + 3, rewardExpiry: newExpiry })
-                        });
-
-                        // Customer ka status 'completed' karna
-                        await fetch(getDbUrl(`/users/${customerPhone}.json`, adminToken), {
-                            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ referralStatus: "completed" })
-                        });
+                        await db.ref(`/users/${referrerPhone}`).update({ freeDeliveries: currentFreeDel + 3, rewardExpiry: newExpiry });
+                        await db.ref(`/users/${customerPhone}`).update({ referralStatus: "completed" });
                     }
                 }
             }
@@ -353,119 +311,78 @@ app.post('/api/order/update-status', async (req, res) => {
         res.json({ success: true, message: "Status updated" });
 
     } catch (error) {
-        console.error("Status Update Error:", error);
         res.json({ success: false, message: error.message });
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server port ${PORT} par chal raha hai`);
-});
 // ==========================================
-// 7. 🎁 MANUAL REWARD DENA (Sirf Admin Ke Liye)
+// 7. 🎁 MANUAL REWARD DENA
 // ==========================================
 app.post('/api/admin/give-reward', async (req, res) => {
     try {
         const { targetPhone, rewardCount, adminToken } = req.body;
+        if (!targetPhone || !rewardCount || !adminToken) return res.json({ success: false, message: "Missing info" });
 
-        if (!targetPhone || !rewardCount || !adminToken) {
-            return res.json({ success: false, message: "Target Phone, Reward Count aur Admin Token zaroori hai" });
-        }
+        const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
+        if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') throw new Error("Admin access denied");
 
-        // 1. User ka purana data nikalo (Admin Token se lock khol kar)
-        const userRes = await fetch(getDbUrl(`/users/${targetPhone}.json`, adminToken));
-        
-        if (!userRes.ok) {
-            return res.json({ success: false, message: "Aapko Admin access nahi hai!" });
-        }
-        
-        const userData = await userRes.json();
-        if (!userData) {
-            return res.json({ success: false, message: "User nahi mila" });
-        }
+        const userData = (await db.ref(`/users/${targetPhone}`).once('value')).val();
+        if (!userData) return res.json({ success: false, message: "User nahi mila" });
 
-        // 2. Naya Reward set karo
         let currentFreeDel = parseInt(userData.freeDeliveries) || 0;
         let newFreeDel = currentFreeDel + parseInt(rewardCount);
-        let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 din ki validity
+        let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); 
 
-        // 3. Database update karo
-        await fetch(getDbUrl(`/users/${targetPhone}.json`, adminToken), {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                freeDeliveries: newFreeDel > 0 ? newFreeDel : 0, // 0 se kam na ho
-                rewardExpiry: newFreeDel > 0 ? newExpiry : null
-            })
+        await db.ref(`/users/${targetPhone}`).update({
+            freeDeliveries: newFreeDel > 0 ? newFreeDel : 0, 
+            rewardExpiry: newFreeDel > 0 ? newExpiry : null
         });
 
-        res.json({ success: true, message: `User ${targetPhone} ko ${rewardCount} reward manually de diya gaya.` });
+        res.json({ success: true, message: `Reward manually added to ${targetPhone}` });
 
     } catch (error) {
-        console.error("Manual Reward Error:", error);
         res.json({ success: false, message: error.message });
     }
 });
+
 // ==========================================
-// 8. 🚫 SECURE ORDER CANCEL (User Token Ke Sath)
+// 8. 🚫 SECURE ORDER CANCEL
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
         const { orderId, cancelReason, userToken } = req.body;
+        if (!orderId || !userToken) return res.json({ success: false, message: "Missing info" });
 
-        if (!orderId || !userToken) {
-            return res.json({ success: false, message: "Order ID aur Token zaroori hai" });
-        }
+        await admin.auth().verifyIdToken(userToken);
 
-        // 1. Order ka existing data fetch karna (VIP Token se)
-        // Firebase rules check karenge ki ye order sach mein isi user ka hai ya nahi
-        const orderRes = await fetch(getDbUrl(`/orders/${orderId}.json`, userToken));
-        
-        if (!orderRes.ok) {
-            return res.json({ success: false, message: "VIP Lock: Aapko ye order cancel karne ki permission nahi hai." });
-        }
+        const orderData = (await db.ref(`/orders/${orderId}`).once('value')).val();
+        if (!orderData) return res.json({ success: false, message: "Order nahi mila." });
 
-        const orderData = await orderRes.json();
-        
-        if (!orderData) {
-            return res.json({ success: false, message: "Order nahi mila." });
-        }
-
-        // 2. Check karna ki order raste mein toh nahi nikal gaya
         if (orderData.status !== 'Packing in Progress ⏳' && orderData.status !== 'Confirmed') {
-            return res.json({ success: false, message: "Order pack ho chuka hai ya raste mein hai, ab cancel nahi ho sakta." });
+            return res.json({ success: false, message: "Order pack ho chuka hai, ab cancel nahi ho sakta." });
         }
 
-        // 3. Status Update karna (Database mein)
-        await fetch(getDbUrl(`/orders/${orderId}.json`, userToken), {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                status: 'Cancelled by Customer', 
-                cancelReason: cancelReason || 'No reason provided'
-            })
+        await db.ref(`/orders/${orderId}`).update({ 
+            status: 'Cancelled by Customer', 
+            cancelReason: cancelReason || 'No reason provided'
         });
 
-        // 4. User profile mein cancelCount badhana (Anti-spam ke liye)
         if (orderData.phone) {
-            const userRes = await fetch(getDbUrl(`/users/${orderData.phone}.json`, userToken));
-            if (userRes.ok) {
-                const userData = await userRes.json();
+            const userData = (await db.ref(`/users/${orderData.phone}`).once('value')).val();
+            if (userData) {
                 const newCancelCount = (parseInt(userData.cancelCount) || 0) + 1;
-                
-                await fetch(getDbUrl(`/users/${orderData.phone}.json`, userToken), {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cancelCount: newCancelCount })
-                });
+                await db.ref(`/users/${orderData.phone}`).update({ cancelCount: newCancelCount });
             }
         }
 
         res.json({ success: true, message: "Order successfully cancel ho gaya." });
 
     } catch (error) {
-        console.error("Cancel Order Error:", error);
         res.json({ success: false, message: "Server error" });
     }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server port ${PORT} par chal raha hai`);
 });
