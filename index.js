@@ -1,27 +1,29 @@
 const express = require('express');
 const cors = require('cors');
-const admin = require('firebase-admin'); // ✅ NAYA: Firebase Admin SDK joda gaya
+const admin = require('firebase-admin');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // ==========================================
-// ⚙️ ENVIRONMENT VARIABLES (Server Settings)
+// ⚙️ ENVIRONMENT VARIABLES & FIREBASE ADMIN
 // ==========================================
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// ✅ NAYA: JSON FILE SETUP (Render Environment Variable se)
-const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-if (serviceAccountRaw) {
+// ✅ NAYA: Aapki upload ki hui JSON file ko link kiya gaya hai
+// Dhyan rakhein: JSON file ka naam bilkul match karna chahiye, jaise ki 'serviceAccountKey.json'
+try {
+    const serviceAccount = require('./serviceAccountKey.json'); 
     admin.initializeApp({
-        credential: admin.credential.cert(JSON.parse(serviceAccountRaw)),
+        credential: admin.credential.cert(serviceAccount),
         databaseURL: "https://sabzifresh-d8742-default-rtdb.firebaseio.com"
     });
-} else {
-    console.warn("WARNING: FIREBASE_SERVICE_ACCOUNT_JSON missing hai!");
+    console.log("Firebase Admin Started Successfully with JSON File!");
+} catch (error) {
+    console.error("🚨 ERROR: serviceAccountKey.json file nahi mili ya usme galti hai!", error);
 }
 
 const db = admin.database();
@@ -386,4 +388,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server port ${PORT} par chal raha hai`);
 });
-
