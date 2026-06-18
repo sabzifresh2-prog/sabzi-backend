@@ -30,15 +30,6 @@ try {
     console.error("🚨 ERROR: Variable theek se load nahi hua!", error);
 }
 
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        databaseURL: "https://sabzifresh-d8742-default-rtdb.firebaseio.com"
-    });
-    console.log("Firebase Admin Started Successfully with JSON File!");
-} catch (error) {
-    console.error("🚨 ERROR: serviceAccountKey.json file nahi mili ya usme galti hai!", error);
-}
-
 const db = admin.database();
 
 app.get('/', (req, res) => {
