@@ -13,7 +13,7 @@ const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// ✅ FINAL: Render ke Environment Variable se JSON read karna
+// ✅ Render ke Environment Variable se JSON (Master Key) read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
 try {
@@ -34,19 +34,27 @@ try {
 const db = admin.database();
 
 app.get('/', (req, res) => {
-    res.json({ status: 'OK', message: 'Sabzi Fresh API VIP Lock ke sath Live Hai!' });
+    res.json({ status: 'OK', message: 'Sabzi Fresh API 100% Secure System ke sath Live Hai!' });
 });
 
 // ==========================================
-// 1. 📩 OTP BHEJNA (Google Script ke through)
+// 1. 📩 OTP BHEJNA (POST Request - Band Dibba)
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
         const { email } = req.body;
         if (!email) return res.json({ success: false, message: "Email required" });
 
-        const url = `${OTP_SCRIPT_URL}?action=send_otp&email=${encodeURIComponent(email)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
-        const response = await fetch(url);
+        const response = await fetch(OTP_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: "send_otp",
+                email: email,
+                secret: OTP_SECRET_KEY
+            })
+        });
+        
         const text = await response.text();
         
         try { res.json(JSON.parse(text)); } 
@@ -57,15 +65,24 @@ app.post('/api/otp/send', async (req, res) => {
 });
 
 // ==========================================
-// 2. ✅ OTP VERIFY KARNA
+// 2. ✅ OTP VERIFY KARNA (POST Request - Band Dibba)
 // ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
         const { email, code } = req.body;
         if (!email || !code) return res.json({ success: false, message: "Email aur code zaroori hai" });
 
-        const url = `${OTP_SCRIPT_URL}?action=verify_otp&email=${encodeURIComponent(email)}&code=${encodeURIComponent(code)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
-        const response = await fetch(url);
+        const response = await fetch(OTP_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: "verify_otp",
+                email: email,
+                code: code,
+                secret: OTP_SECRET_KEY
+            })
+        });
+        
         const text = await response.text();
         
         try { res.json(JSON.parse(text)); } 
@@ -76,7 +93,7 @@ app.post('/api/otp/verify', async (req, res) => {
 });
 
 // ==========================================
-// 3. 🛡️ SECURE REGISTRATION & WHATSAPP SUPPORT
+// 3. 🛡️ SECURE REGISTRATION (VIP Pass Check)
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -87,7 +104,7 @@ app.post('/api/auth/register', async (req, res) => {
             return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
         }
 
-        // ✅ TOKEN VERIFY: Taki koi fake token na bhej de
+        // ✅ VIP PASS VERIFY (Kahin hacker nakli token toh nahi laya?)
         await admin.auth().verifyIdToken(userToken);
 
         let referrerPhone = null;
@@ -132,7 +149,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     } catch (error) {
         console.error("Register Error:", error);
-        res.json({ success: false, message: "Server Error ya Invalid Token." });
+        res.json({ success: false, message: "Server Error ya Invalid VIP Token." });
     }
 });
 
@@ -185,7 +202,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER
+// 5. 🚀 SECURE ORDER MANAGER (VIP Pass Check)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -195,7 +212,7 @@ app.post('/api/order/place', async (req, res) => {
             return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
         }
 
-        // ✅ TOKEN VERIFY KARO
+        // ✅ VIP PASS VERIFY KARO
         await admin.auth().verifyIdToken(userToken);
 
         const productsDB = (await db.ref('/products').once('value')).val() || {};
@@ -347,7 +364,7 @@ app.post('/api/admin/give-reward', async (req, res) => {
 });
 
 // ==========================================
-// 8. 🚫 SECURE ORDER CANCEL
+// 8. 🚫 SECURE ORDER CANCEL (VIP Pass Check)
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
