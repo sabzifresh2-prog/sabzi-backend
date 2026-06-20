@@ -87,8 +87,12 @@ app.post('/api/auth/register', async (req, res) => {
             return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
         }
 
-        // ✅ TOKEN VERIFY: Taki koi fake token na bhej de
-        await admin.auth().verifyIdToken(userToken);
+        // 🌟 NEW SECURITY ADDED: Token Verify aur Email Match check
+        const decodedToken = await admin.auth().verifyIdToken(userToken);
+        
+        if (decodedToken.email !== cleanEmail) {
+            return res.json({ success: false, message: "Security Alert: Token aur Email match nahi ho rahe (Fake Identity)!" });
+        }
 
         let referrerPhone = null;
         if (referCode) {
@@ -354,6 +358,7 @@ app.post('/api/order/cancel', async (req, res) => {
         const { orderId, cancelReason, userToken } = req.body;
         if (!orderId || !userToken) return res.json({ success: false, message: "Missing info" });
 
+        // Token verify
         await admin.auth().verifyIdToken(userToken);
 
         const orderData = (await db.ref(`/orders/${orderId}`).once('value')).val();
