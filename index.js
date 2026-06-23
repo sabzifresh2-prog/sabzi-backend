@@ -392,3 +392,19 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Server port ${PORT} par chal raha hai`);
 });
+        // (Yeh line aapke code mein pehle se hai)
+        const settingsDB = (await db.ref('/settings').once('value')).val() || {};
+
+        // 🛑 1. APP CLOSE CHECK (Agar app band hai toh yahi se order reject)
+        if (settingsDB.isAppClosed === true) {
+            return res.json({ success: false, message: "App is currently closed. We are not accepting orders right now." });
+        }
+
+        // 🛑 2. USER BLOCKED CHECK (Agar user block hai toh order reject)
+        const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
+        if (userData && userData.blocked === true) {
+            return res.json({ success: false, message: "Aapka account blocked hai. Kripya support se baat karein." });
+        }
+
+        let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
+        // ... (Baaki ka code same rahega) ...
