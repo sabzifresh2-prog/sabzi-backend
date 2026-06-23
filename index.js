@@ -188,8 +188,9 @@ app.post('/api/order/calculate', async (req, res) => {
     }
 });
 
+
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER
+// 5. 🚀 SECURE ORDER MANAGER (100% Optimized)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -202,8 +203,24 @@ app.post('/api/order/place', async (req, res) => {
         // ✅ TOKEN VERIFY KARO
         await admin.auth().verifyIdToken(userToken);
 
-        const productsDB = (await db.ref('/products').once('value')).val() || {};
+        // 🚀 SMART FETCH: Sirf wahi products fetch karo jo cart mein hain (Poora godam nahi)
+        const productsDB = {};
+        await Promise.all(Object.keys(cartItems).map(async (id) => {
+            productsDB[id] = (await db.ref(`/products/${id}`).once('value')).val();
+        }));
+
         const settingsDB = (await db.ref('/settings').once('value')).val() || {};
+
+        // 🛑 1. APP CLOSE CHECK (Agar app band hai toh yahi se order reject)
+        if (settingsDB.isAppClosed === true) {
+            return res.json({ success: false, message: "App is currently closed. We are not accepting orders right now." });
+        }
+
+        // 🛑 2. USER BLOCKED CHECK (Agar user block hai toh order reject)
+        const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
+        if (userData && userData.blocked === true) {
+            return res.json({ success: false, message: "Aapka account blocked hai. Kripya support se baat karein." });
+        }
 
         let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
@@ -237,10 +254,8 @@ app.post('/api/order/place', async (req, res) => {
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
 
-        if (customerDetails.usedReward && secureSubtotal > 0) {
-            const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
-
-            if (userData && parseInt(userData.freeDeliveries) > 0) {
+        if (customerDetails.usedReward && secureSubtotal > 0 && userData) {
+            if (parseInt(userData.freeDeliveries) > 0) {
                 secureDeliveryCharge = 0; 
                 let newFreeDel = parseInt(userData.freeDeliveries) - 1;
                 await db.ref(`/users/${customerDetails.phone}`).update({ freeDeliveries: newFreeDel });
@@ -250,15 +265,19 @@ app.post('/api/order/place', async (req, res) => {
 
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
         const orderTimestamp = Date.now();
-        let orderDateObj = new Date(orderTimestamp);
-        let formattedDate = orderDateObj.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) + " " + orderDateObj.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 
+        // 🔥 NAYA ORDER DATA (itemsList aur extra date/time yahan se hata diya hai data bachane ke liye)
         const orderData = {
-            id: orderId, timestamp: orderTimestamp, date: formattedDate, 
-            time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-            status: "Packing in Progress ⏳", total: secureFinalTotal, deliveryCharge: secureDeliveryCharge,
-            customer: customerDetails.name, phone: customerDetails.phone, email: customerDetails.email || '',
-            address: customerDetails.address, itemsList: secureItemsList.join(', '), items: itemsObj,
+            id: orderId, 
+            timestamp: orderTimestamp, 
+            status: "Packing in Progress ⏳", 
+            total: secureFinalTotal, 
+            deliveryCharge: secureDeliveryCharge,
+            customer: customerDetails.name, 
+            phone: customerDetails.phone, 
+            email: customerDetails.email || '',
+            address: customerDetails.address, 
+            items: itemsObj,
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
@@ -387,24 +406,3 @@ app.post('/api/order/cancel', async (req, res) => {
         res.json({ success: false, message: "Server error" });
     }
 });
-
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log(`Server port ${PORT} par chal raha hai`);
-});
-        // (Yeh line aapke code mein pehle se hai)
-        const settingsDB = (await db.ref('/settings').once('value')).val() || {};
-
-        // 🛑 1. APP CLOSE CHECK (Agar app band hai toh yahi se order reject)
-        if (settingsDB.isAppClosed === true) {
-            return res.json({ success: false, message: "App is currently closed. We are not accepting orders right now." });
-        }
-
-        // 🛑 2. USER BLOCKED CHECK (Agar user block hai toh order reject)
-        const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
-        if (userData && userData.blocked === true) {
-            return res.json({ success: false, message: "Aapka account blocked hai. Kripya support se baat karein." });
-        }
-
-        let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
-        // ... (Baaki ka code same rahega) ...
