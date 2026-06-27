@@ -119,7 +119,7 @@ app.post('/api/auth/register', async (req, res) => {
         const userSnap = await db.ref(`/users/${phone}`).once('value');
         if (userSnap.exists()) {
             const myWhatsAppNumber = "+918409081468"; 
-            const waMessage = encodeURIComponent(`Hi Admin, main Sabzi Fresh app par apna purana Gmail bhool gaya hoon aur naya account nahi bana pa raha.\n\nMera Mobile Number: ${phone}\n\nKripya is number ka purana data delete/reset kar dijiye taaki main naya account bana sakun.`);
+            const waMessage = encodeURIComponent(`Hi customer support, main Sabzi Fresh app par apna purana Gmail bhool gaya hoon aur naya account nahi bana pa raha.\n\nMera Mobile Number: ${phone}\n\nKripya is number ka fir se account banane ka permission de do taaki main naya account bana sakun.`);
             
             return res.json({ 
                 success: false, 
@@ -188,9 +188,8 @@ app.post('/api/order/calculate', async (req, res) => {
     }
 });
 
-
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (100% Optimized)
+// 5. 🚀 SECURE ORDER MANAGER
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -203,24 +202,20 @@ app.post('/api/order/place', async (req, res) => {
         // ✅ TOKEN VERIFY KARO
         await admin.auth().verifyIdToken(userToken);
 
-        // 🚀 SMART FETCH: Sirf wahi products fetch karo jo cart mein hain (Poora godam nahi)
-        const productsDB = {};
-        await Promise.all(Object.keys(cartItems).map(async (id) => {
-            productsDB[id] = (await db.ref(`/products/${id}`).once('value')).val();
-        }));
+        // 🛑 SECURITY CHECK 1: USER BLOCK TOH NAHI HAI?
+        const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
+        if (userData && userData.blocked === true) {
+            return res.json({ success: false, message: "Aapka account block hai. Aap order nahi kar sakte." });
+        }
 
         const settingsDB = (await db.ref('/settings').once('value')).val() || {};
 
-        // 🛑 1. APP CLOSE CHECK (Agar app band hai toh yahi se order reject)
+        // 🛑 SECURITY CHECK 2: APP BAND (CLOSED) TOH NAHI HAI?
         if (settingsDB.isAppClosed === true) {
-            return res.json({ success: false, message: "App is currently closed. We are not accepting orders right now." });
+            return res.json({ success: false, message: "Abhi dukan band hai. Kripya khulne ke baad order karein." });
         }
 
-        // 🛑 2. USER BLOCKED CHECK (Agar user block hai toh order reject)
-        const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
-        if (userData && userData.blocked === true) {
-            return res.json({ success: false, message: "Aapka account blocked hai. Kripya support se baat karein." });
-        }
+        const productsDB = (await db.ref('/products').once('value')).val() || {};
 
         let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
@@ -237,8 +232,10 @@ app.post('/api/order/place', async (req, res) => {
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
                 let itemQtyText = asliProduct.qtyText || "1 Kg"; 
                 
+                // Telegram ke liye text format ready kar rahe hain
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
                 
+                // Firebase ke liye object ready kar rahe hain
                 itemsObj.push({ 
                     name: itemName, 
                     nameHi: asliProduct.nameHi || "", 
@@ -254,19 +251,19 @@ app.post('/api/order/place', async (req, res) => {
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
 
-        if (customerDetails.usedReward && secureSubtotal > 0 && userData) {
-            if (parseInt(userData.freeDeliveries) > 0) {
-                secureDeliveryCharge = 0; 
-                let newFreeDel = parseInt(userData.freeDeliveries) - 1;
-                await db.ref(`/users/${customerDetails.phone}`).update({ freeDeliveries: newFreeDel });
-            }
+        // Reward system ke liye userData use kiya (Server speed fast hogi)
+        if (customerDetails.usedReward && secureSubtotal > 0 && userData && parseInt(userData.freeDeliveries) > 0) {
+            secureDeliveryCharge = 0; 
+            let newFreeDel = parseInt(userData.freeDeliveries) - 1;
+            await db.ref(`/users/${customerDetails.phone}`).update({ freeDeliveries: newFreeDel });
         }
+        
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
         const orderTimestamp = Date.now();
 
-        // 🔥 NAYA ORDER DATA (itemsList aur extra date/time yahan se hata diya hai data bachane ke liye)
+        // ✅ CLEAN DATA: Sirf zaroori fields, faltu date/time/itemsList hata diya
         const orderData = {
             id: orderId, 
             timestamp: orderTimestamp, 
@@ -277,12 +274,13 @@ app.post('/api/order/place', async (req, res) => {
             phone: customerDetails.phone, 
             email: customerDetails.email || '',
             address: customerDetails.address, 
-            items: itemsObj,
+            items: itemsObj, 
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
         await db.ref(`/orders/${orderId}`).set(orderData);
 
+        // Telegram Par Notification
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
             fetch(TELEGRAM_SCRIPT_URL, {
@@ -405,4 +403,9 @@ app.post('/api/order/cancel', async (req, res) => {
     } catch (error) {
         res.json({ success: false, message: "Server error" });
     }
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+    console.log(`Server port ${PORT} par chal raha hai`);
 });
