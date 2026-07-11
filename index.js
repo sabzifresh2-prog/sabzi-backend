@@ -121,7 +121,7 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // ==========================================
-// 3. 🛒 SECURE BILL CALCULATOR
+// 3. 🛒 SECURE BILL CALCULATOR (No Defaults)
 // ==========================================
 app.post('/api/order/calculate', async (req, res) => {
     try {
@@ -171,7 +171,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 4. 🚀 SECURE ORDER MANAGER (With Smart Rider Assign)
+// 4. 🚀 SECURE ORDER MANAGER (With Atomic Stock Transaction & Smart Rider Assign)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -194,8 +194,8 @@ app.post('/api/order/place', async (req, res) => {
         let secureSubtotal = 0; 
         let secureItemsList = []; 
         let itemsObj = [];
-        let stockUpdates = {}; 
 
+        // 🛑 STEP 1: Preliminary Check & Calculation
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
             let asliProduct = productsDB[itemId];
@@ -205,27 +205,68 @@ app.post('/api/order/place', async (req, res) => {
                 if (currentStock < qty) {
                     return res.json({ 
                         success: false, 
-                        message: `Sorry, '${asliProduct.nameEn || "Item"}' available nahi hai ya stock kam hai. Sirf ${currentStock} bache hain.` 
+                        message: `Sorry, '${asliProduct.nameEn || "Item"}' available nahi hai. Sirf ${currentStock} bache hain.` 
                     });
                 }
+
                 let itemTotal = asliProduct.price * qty;
                 secureSubtotal += itemTotal;
-                
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-                let itemQtyText = asliProduct.qtyText || "1 Kg";
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
                 
                 itemsObj.push({ 
                     id: itemId, name: itemName, nameHi: asliProduct.nameHi || "", 
-                    price: itemTotal, basePrice: asliProduct.price, qty: qty, qtyText: itemQtyText
+                    price: itemTotal, basePrice: asliProduct.price, qty: qty, qtyText: asliProduct.qtyText || "1 Kg"
                 });
-
-                stockUpdates[`/products/${itemId}/stock`] = currentStock - qty;
             }
         }
 
         if (secureSubtotal === 0) return res.json({ success: false, message: "Cart empty" });
 
+        // 🛑 STEP 2: ATOMIC STOCK DEDUCTION (Race Condition Fix)
+        let stockDeducted = [];
+        let transactionFailed = false;
+        let failedItemName = "";
+
+        for (let item of itemsObj) {
+            const productRef = db.ref(`/products/${item.id}`);
+            const result = await productRef.transaction((product) => {
+                if (product) {
+                    let currentStock = parseFloat(product.stock) || 0;
+                    if (currentStock >= item.qty) {
+                        product.stock = currentStock - item.qty; // Minus stock
+                        return product;
+                    } else {
+                        return undefined; // Transaction abort (Stock insufficient)
+                    }
+                }
+                return null;
+            });
+
+            if (result.committed) {
+                stockDeducted.push(item);
+            } else {
+                transactionFailed = true;
+                failedItemName = item.name;
+                break;
+            }
+        }
+
+        // Agar kisi item ka stock kisi aur ne le liya, toh baaki items ka stock wapas karo
+        if (transactionFailed) {
+            for (let dItem of stockDeducted) {
+                await db.ref(`/products/${dItem.id}`).transaction((product) => {
+                    if (product) product.stock = (parseFloat(product.stock) || 0) + dItem.qty;
+                    return product;
+                });
+            }
+            return res.json({ 
+                success: false, 
+                message: `Oops! Lagta hai kisi aur ne abhi-abhi '${failedItemName}' order kar liya. Please cart update karein.` 
+            });
+        }
+
+        // ✅ STEP 3: Order Create Karo
         let secureDeliveryCharge = 0;
         if (adminFreeLimit > 0 && secureSubtotal >= adminFreeLimit) {
             secureDeliveryCharge = 0; 
@@ -241,9 +282,7 @@ app.post('/api/order/place', async (req, res) => {
         
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-        // ==========================================
-        // 🧠 NAYA SMART RIDER ASSIGN LOGIC START
-        // ==========================================
+        // 🧠 NAYA SMART RIDER ASSIGN LOGIC
         let assignedRiderEmail = null;
         const ridersSnap = await db.ref('/riders').orderByChild('status').equalTo('online').once('value');
         
@@ -251,44 +290,32 @@ app.post('/api/order/place', async (req, res) => {
             const ridersData = ridersSnap.val();
             const onlineRiders = Object.values(ridersData);
             
-            // Sabhi active orders uthao taaki pata chale kis rider par kitna load hai
             const ordersSnap = await db.ref('/orders').once('value');
             const allOrders = ordersSnap.val() || {};
             
-            // Har online rider ka khata (count) 0 se shuru karo
             let activeCounts = {};
             onlineRiders.forEach(r => { activeCounts[r.email] = 0; });
 
-            // Count karo kis rider ke paas kitne pending orders hain
             for (let key in allOrders) {
                 let ord = allOrders[key];
                 if (ord.assignedRider && activeCounts[ord.assignedRider] !== undefined) {
-                    if (ord.status !== 'Delivered' && ord.status !== 'Cancelled by Customer' && ord.status !== 'Cancelled by SabziFresh' && ord.status !== 'Returned/Rejected') {
+                    if (['Packing in Progress ⏳', 'Confirmed', 'Out for Delivery'].includes(ord.status)) {
                         activeCounts[ord.assignedRider]++;
                     }
                 }
             }
 
-            // Sabse kam order wala number dhundho (Maan lo kisi ke paas 0 hai, kisi ke paas 2)
             let minCount = Infinity;
             for (let email in activeCounts) {
-                if (activeCounts[email] < minCount) {
-                    minCount = activeCounts[email];
-                }
+                if (activeCounts[email] < minCount) minCount = activeCounts[email];
             }
 
-            // Un riders ko alag nikalo jinke paas sabse kam (ya 0) order hain
             const bestRiders = onlineRiders.filter(r => activeCounts[r.email] === minCount);
-
-            // Agar 2 riders khali hain, toh unme se randomly ek ko de do
             const selectedRider = bestRiders[Math.floor(Math.random() * bestRiders.length)];
             assignedRiderEmail = selectedRider.email;
         }
-        // ==========================================
-        // 🧠 SMART RIDER ASSIGN LOGIC END
-        // ==========================================
 
-        const orderId = "SF" + Date.now().toString(36).toUpperCase().substr(4,6);
+        const orderId = "SF" + Date.now().toString(36).toUpperCase().substring(4,6);
         const orderTimestamp = Date.now();
 
         const orderData = {
@@ -301,29 +328,29 @@ app.post('/api/order/place', async (req, res) => {
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
-        stockUpdates[`/orders/${orderId}`] = orderData;
-        await db.ref().update(stockUpdates);
+        // Order Database mein Save karna
+        await db.ref(`/orders/${orderId}`).set(orderData);
 
+        // Telegram Notification
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
             fetch(TELEGRAM_SCRIPT_URL, {
                 method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: new URLSearchParams({ 'message': teleMessage })
-            }).catch(e => console.log("Telegram error: ", e));
+            }).catch(e => console.log("Telegram alert error"));
         }
 
+        // Rider App Notification
         if (assignedRiderEmail && ONESIGNAL_APP_ID && ONESIGNAL_REST_KEY) {
             try {
                 const payload = {
                     app_id: ONESIGNAL_APP_ID,
                     filters: [{ field: "tag", key: "rider_email", relation: "=", value: assignedRiderEmail }],
                     headings: { en: "🚨 Naya Order Aaya Hai!" },
-                    contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai. App khol kar accept karein!` }
+                    contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai. Accept karein!` }
                 };
                 fetch("https://onesignal.com/api/v1/notifications", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` },
-                    body: JSON.stringify(payload)
+                    method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` }, body: JSON.stringify(payload)
                 }).catch(err => console.log("OneSignal Request failed"));
             } catch(e) { console.log("Rider Notification Error"); }
         }
