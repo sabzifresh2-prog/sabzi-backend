@@ -131,9 +131,11 @@ app.post('/api/order/calculate', async (req, res) => {
         const productsDB = (await db.ref('/products').once('value')).val() || {};
         const settingsDB = (await db.ref('/settings').once('value')).val() || {};
 
-        let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
-        let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
-        let secureSubtotal = 0; let secureItemsList = []; 
+        let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 0;
+        let adminFreeLimit = parseInt(settingsDB.minFreeDeliveryThreshold) || 0;
+        
+        let secureSubtotal = 0; 
+        let secureItemsList = []; 
 
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
@@ -141,16 +143,26 @@ app.post('/api/order/calculate', async (req, res) => {
             if (asliProduct && !isNaN(qty) && qty > 0) {
                 let itemTotal = asliProduct.price * qty;
                 secureSubtotal += itemTotal;
-                
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
             }
         }
 
-        let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
+        let secureDeliveryCharge = 0;
+        if (secureSubtotal > 0) {
+            if (adminFreeLimit > 0 && secureSubtotal >= adminFreeLimit) {
+                secureDeliveryCharge = 0; 
+            } else {
+                secureDeliveryCharge = adminDeliveryFee;
+            }
+        }
+
         res.json({
-            success: true, asliSubtotal: secureSubtotal, asliDelivery: secureDeliveryCharge,
-            asliTotal: secureSubtotal + secureDeliveryCharge, verifiedItems: secureItemsList
+            success: true, 
+            asliSubtotal: secureSubtotal, 
+            asliDelivery: secureDeliveryCharge,
+            asliTotal: secureSubtotal + secureDeliveryCharge, 
+            verifiedItems: secureItemsList
         });
 
     } catch (error) {
@@ -159,7 +171,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 4. 🚀 SECURE ORDER MANAGER (With Stock Check & Full Data)
+// 4. 🚀 SECURE ORDER MANAGER (With Smart Rider Assign)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -175,18 +187,20 @@ app.post('/api/order/place', async (req, res) => {
         if (settingsDB.isAppClosed === true) return res.json({ success: false, message: "Abhi dukan band hai." });
 
         const productsDB = (await db.ref('/products').once('value')).val() || {};
-        let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
-        let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
-
-        let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
         
+        let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 0;
+        let adminFreeLimit = parseInt(settingsDB.minFreeDeliveryThreshold) || 0;
+
+        let secureSubtotal = 0; 
+        let secureItemsList = []; 
+        let itemsObj = [];
+        let stockUpdates = {}; 
+
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
             let asliProduct = productsDB[itemId];
             
             if (asliProduct && !isNaN(qty) && qty > 0) {
-                
-                // 🛑 STRICT PRE-ORDER STOCK CHECK 🛑
                 let currentStock = parseFloat(asliProduct.stock) || 0;
                 if (currentStock < qty) {
                     return res.json({ 
@@ -194,7 +208,6 @@ app.post('/api/order/place', async (req, res) => {
                         message: `Sorry, '${asliProduct.nameEn || "Item"}' available nahi hai ya stock kam hai. Sirf ${currentStock} bache hain.` 
                     });
                 }
-
                 let itemTotal = asliProduct.price * qty;
                 secureSubtotal += itemTotal;
                 
@@ -202,22 +215,23 @@ app.post('/api/order/place', async (req, res) => {
                 let itemQtyText = asliProduct.qtyText || "1 Kg";
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
                 
-                // ✅ HINDI NAME & QTY TEXT RESTORED HERE
                 itemsObj.push({ 
-                    id: itemId, 
-                    name: itemName, 
-                    nameHi: asliProduct.nameHi || "", 
-                    price: itemTotal,
-                    basePrice: asliProduct.price,
-                    qty: qty,                         
-                    qtyText: itemQtyText
+                    id: itemId, name: itemName, nameHi: asliProduct.nameHi || "", 
+                    price: itemTotal, basePrice: asliProduct.price, qty: qty, qtyText: itemQtyText
                 });
+
+                stockUpdates[`/products/${itemId}/stock`] = currentStock - qty;
             }
         }
 
         if (secureSubtotal === 0) return res.json({ success: false, message: "Cart empty" });
 
-        let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
+        let secureDeliveryCharge = 0;
+        if (adminFreeLimit > 0 && secureSubtotal >= adminFreeLimit) {
+            secureDeliveryCharge = 0; 
+        } else {
+            secureDeliveryCharge = adminDeliveryFee;
+        }
 
         if (customerDetails.usedReward && secureSubtotal > 0 && userData && parseInt(userData.freeDeliveries) > 0) {
             secureDeliveryCharge = 0; 
@@ -227,15 +241,52 @@ app.post('/api/order/place', async (req, res) => {
         
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-        // 🧠 ZOMATO-STYLE AUTO-ASSIGN LOGIC
+        // ==========================================
+        // 🧠 NAYA SMART RIDER ASSIGN LOGIC START
+        // ==========================================
         let assignedRiderEmail = null;
         const ridersSnap = await db.ref('/riders').orderByChild('status').equalTo('online').once('value');
-        if(ridersSnap.exists()) {
+        
+        if (ridersSnap.exists()) {
             const ridersData = ridersSnap.val();
             const onlineRiders = Object.values(ridersData);
-            const selectedRider = onlineRiders[Math.floor(Math.random() * onlineRiders.length)];
+            
+            // Sabhi active orders uthao taaki pata chale kis rider par kitna load hai
+            const ordersSnap = await db.ref('/orders').once('value');
+            const allOrders = ordersSnap.val() || {};
+            
+            // Har online rider ka khata (count) 0 se shuru karo
+            let activeCounts = {};
+            onlineRiders.forEach(r => { activeCounts[r.email] = 0; });
+
+            // Count karo kis rider ke paas kitne pending orders hain
+            for (let key in allOrders) {
+                let ord = allOrders[key];
+                if (ord.assignedRider && activeCounts[ord.assignedRider] !== undefined) {
+                    if (ord.status !== 'Delivered' && ord.status !== 'Cancelled by Customer' && ord.status !== 'Cancelled by SabziFresh' && ord.status !== 'Returned/Rejected') {
+                        activeCounts[ord.assignedRider]++;
+                    }
+                }
+            }
+
+            // Sabse kam order wala number dhundho (Maan lo kisi ke paas 0 hai, kisi ke paas 2)
+            let minCount = Infinity;
+            for (let email in activeCounts) {
+                if (activeCounts[email] < minCount) {
+                    minCount = activeCounts[email];
+                }
+            }
+
+            // Un riders ko alag nikalo jinke paas sabse kam (ya 0) order hain
+            const bestRiders = onlineRiders.filter(r => activeCounts[r.email] === minCount);
+
+            // Agar 2 riders khali hain, toh unme se randomly ek ko de do
+            const selectedRider = bestRiders[Math.floor(Math.random() * bestRiders.length)];
             assignedRiderEmail = selectedRider.email;
         }
+        // ==========================================
+        // 🧠 SMART RIDER ASSIGN LOGIC END
+        // ==========================================
 
         const orderId = "SF" + Date.now().toString(36).toUpperCase().substr(4,6);
         const orderTimestamp = Date.now();
@@ -244,15 +295,15 @@ app.post('/api/order/place', async (req, res) => {
             id: orderId, timestamp: orderTimestamp, status: "Packing in Progress ⏳", 
             total: secureFinalTotal, deliveryCharge: secureDeliveryCharge,
             customer: customerDetails.name, phone: customerDetails.phone, 
+            email: (customerDetails.email || '').toLowerCase().trim(),
             address: customerDetails.address, items: itemsObj, 
             assignedRider: assignedRiderEmail,
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
-        // 1. Save Order
-        await db.ref(`/orders/${orderId}`).set(orderData);
+        stockUpdates[`/orders/${orderId}`] = orderData;
+        await db.ref().update(stockUpdates);
 
-        // 2. Telegram Alert for Admin
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
             fetch(TELEGRAM_SCRIPT_URL, {
@@ -261,7 +312,6 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // 3. 🔔 RIDER PUSH NOTIFICATION (Assigned Rider Only)
         if (assignedRiderEmail && ONESIGNAL_APP_ID && ONESIGNAL_REST_KEY) {
             try {
                 const payload = {
@@ -270,13 +320,11 @@ app.post('/api/order/place', async (req, res) => {
                     headings: { en: "🚨 Naya Order Aaya Hai!" },
                     contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai. App khol kar accept karein!` }
                 };
-
                 fetch("https://onesignal.com/api/v1/notifications", {
                     method: "POST",
                     headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` },
                     body: JSON.stringify(payload)
                 }).catch(err => console.log("OneSignal Request failed"));
-                
             } catch(e) { console.log("Rider Notification Error"); }
         }
 
@@ -285,36 +333,35 @@ app.post('/api/order/place', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🛵 RIDER API: STATUS UPDATE & LIVE STOCK MINUS
+// 5. 🛵 RIDER API: STATUS UPDATE
 // ==========================================
 app.post('/api/order/rider-update', async (req, res) => {
     try {
         const { orderId, newStatus, riderToken } = req.body;
         if (!orderId || !newStatus || !riderToken) return res.json({ success: false, message: "Missing info" });
 
-        await admin.auth().verifyIdToken(riderToken);
+        const decodedRider = await admin.auth().verifyIdToken(riderToken);
+        const riderEmail = decodedRider.email;
 
-        // 🛑 STOCK MINUS LOGIC
-        if (newStatus === 'Confirmed') {
-            const orderSnap = await db.ref(`/orders/${orderId}`).once('value');
-            const orderData = orderSnap.val();
-            
-            if (orderData && orderData.items) {
-                for (let item of orderData.items) {
-                    const productRef = db.ref(`/products/${item.id}`);
-                    await productRef.transaction((product) => {
-                        if (product) {
-                            product.stock = (product.stock || 0) - item.qty;
-                            if (product.stock < 0) product.stock = 0; 
-                        }
-                        return product;
-                    });
-                }
-            }
+        const riderRecordSnap = await db.ref(`/riders/${decodedRider.uid}`).once('value');
+        if (!riderRecordSnap.exists()) return res.json({ success: false, message: "Rider account not found." });
+
+        const ALLOWED = ['Packing in Progress', 'Confirmed', 'Out for Delivery', 'Delivered', 'Returned/Rejected', 'Cancelled by SabziFresh'];
+        if (!ALLOWED.some(a => newStatus.includes(a.split(' ')[0]))) return res.json({ success: false, message: "Invalid status." });
+
+        const orderSnap = await db.ref(`/orders/${orderId}`).once('value');
+        const orderData = orderSnap.val();
+        if (!orderData) return res.json({ success: false, message: "Order not found." });
+
+        if (orderData.assignedRider && orderData.assignedRider !== riderEmail) {
+            return res.json({ success: false, message: "Yeh order pehle se kisi aur rider ke paas hai." });
         }
 
-        await db.ref(`/orders/${orderId}`).update({ status: newStatus });
-        res.json({ success: true, message: "Status and Stock Updated" });
+        const updates = { status: newStatus };
+        if (newStatus === 'Confirmed') updates.assignedRider = riderEmail;
+
+        await db.ref(`/orders/${orderId}`).update(updates);
+        res.json({ success: true, message: "Status Updated Successfully" });
     } catch (error) {
         res.json({ success: false, message: "Network Error 🌐: Update fail ho gaya." });
     }
@@ -385,7 +432,7 @@ app.post('/api/admin/give-reward', async (req, res) => {
 });
 
 // ==========================================
-// 8. 🚫 SECURE ORDER CANCEL (Customer)
+// 8. 🚫 SECURE ORDER CANCEL (With Stock Restore)
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
@@ -401,6 +448,18 @@ app.post('/api/order/cancel', async (req, res) => {
             return res.json({ success: false, message: "Order pack ho chuka hai, ab cancel nahi ho sakta." });
         }
 
+        if (orderData.items && orderData.items.length > 0) {
+            for (let item of orderData.items) {
+                const productRef = db.ref(`/products/${item.id}`);
+                await productRef.transaction((product) => {
+                    if (product) {
+                        product.stock = (parseFloat(product.stock) || 0) + parseFloat(item.qty);
+                    }
+                    return product;
+                });
+            }
+        }
+
         await db.ref(`/orders/${orderId}`).update({ 
             status: 'Cancelled by Customer', 
             cancelReason: cancelReason || 'No reason provided'
@@ -413,7 +472,7 @@ app.post('/api/order/cancel', async (req, res) => {
                 await db.ref(`/users/${orderData.phone}`).update({ cancelCount: newCancelCount });
             }
         }
-        res.json({ success: true, message: "Order successfully cancel ho gaya." });
+        res.json({ success: true, message: "Order successfully cancel ho gaya aur stock wapas add ho gaya." });
     } catch (error) { res.json({ success: false, message: "Server error" }); }
 });
 
@@ -462,6 +521,43 @@ app.post('/api/admin/send-notification', async (req, res) => {
         const data = await response.json();
         res.json({ success: true, response: data });
     } catch (error) { res.json({ success: false, message: "Notification send fail." }); }
+});
+
+// ==========================================
+// 11. 🛵 RIDER DASHBOARD: Pending Orders
+// ==========================================
+app.post('/api/rider/my-orders', async (req, res) => {
+    try {
+        const { riderToken } = req.body;
+        if (!riderToken) return res.json({ success: false, message: "Rider ka login token missing hai" });
+
+        const decodedRider = await admin.auth().verifyIdToken(riderToken);
+        const riderEmail = decodedRider.email;
+
+        const ordersSnap = await db.ref('/orders').orderByChild('assignedRider').equalTo(riderEmail).once('value');
+        const allOrders = ordersSnap.val() || {};
+
+        let pendingOrders = [];
+        let totalPendingCount = 0;
+
+        for (let key in allOrders) {
+            let order = allOrders[key];
+            if (order.status !== 'Delivered' && order.status !== 'Cancelled by Customer' && order.status !== 'Cancelled by SabziFresh' && order.status !== 'Returned/Rejected') {
+                pendingOrders.push(order);
+                totalPendingCount++;
+            }
+        }
+
+        res.json({ 
+            success: true, 
+            message: `Aapke paas total ${totalPendingCount} pending orders hain. Fatafat deliver karein!`,
+            count: totalPendingCount, 
+            orders: pendingOrders 
+        });
+
+    } catch (error) {
+        res.json({ success: false, message: "Network Error 🌐: Orders load nahi hue." });
+    }
 });
 
 const PORT = process.env.PORT || 10000;
