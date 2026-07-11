@@ -12,10 +12,11 @@ app.use(express.json());
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
+const ONESIGNAL_APP_ID = (process.env.ONESIGNAL_APP_ID || "").trim();
+const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim();
 
-// ✅ FINAL: Render ke Environment Variable se JSON read karna
+// ✅ FIREBASE ADMIN INITIALIZATION
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-
 try {
     if (serviceAccountRaw) {
         const serviceAccount = JSON.parse(serviceAccountRaw);
@@ -28,7 +29,7 @@ try {
         console.warn("🚨 WARNING: FIREBASE_SERVICE_ACCOUNT_JSON variable missing hai!");
     }
 } catch (error) {
-    console.error("🚨 ERROR: JSON Parse fail ho gaya. Variable theek se load nahi hua.", error);
+    console.error("🚨 ERROR: JSON Parse fail ho gaya.", error);
 }
 
 const db = admin.database();
@@ -38,45 +39,34 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// 1. 📩 OTP BHEJNA (Google Script ke through)
+// 1. 📩 OTP BHEJNA & VERIFY KARNA
 // ==========================================
 app.post('/api/otp/send', async (req, res) => {
     try {
         const { email } = req.body;
         if (!email) return res.json({ success: false, message: "Email required" });
-
         const url = `${OTP_SCRIPT_URL}?action=send_otp&email=${encodeURIComponent(email)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
         const response = await fetch(url);
         const text = await response.text();
-        
         try { res.json(JSON.parse(text)); } 
-        catch (e) { res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); }
-    } catch (error) { 
-        res.json({ success: false, message: "Server Error" }); 
-    }
+        catch (e) { res.json({ success: false, message: "Network Error 🌐: Google Server Busy. Retry karein." }); }
+    } catch (error) { res.json({ success: false, message: "Network Error 🌐: Server Down." }); }
 });
 
-// ==========================================
-// 2. ✅ OTP VERIFY KARNA
-// ==========================================
 app.post('/api/otp/verify', async (req, res) => {
     try {
         const { email, code } = req.body;
         if (!email || !code) return res.json({ success: false, message: "Email aur code zaroori hai" });
-
         const url = `${OTP_SCRIPT_URL}?action=verify_otp&email=${encodeURIComponent(email)}&code=${encodeURIComponent(code)}&secret=${encodeURIComponent(OTP_SECRET_KEY)}`;
         const response = await fetch(url);
         const text = await response.text();
-        
         try { res.json(JSON.parse(text)); } 
-        catch (e) { res.json({ success: false, message: "Google Error: " + text.substring(0, 40) }); }
-    } catch (error) { 
-        res.json({ success: false, message: "Server Error" }); 
-    }
+        catch (e) { res.json({ success: false, message: "Network Error 🌐: Google Server Busy. Retry karein." }); }
+    } catch (error) { res.json({ success: false, message: "Network Error 🌐: Server Down." }); }
 });
 
 // ==========================================
-// 3. 🛡️ SECURE REGISTRATION & WHATSAPP SUPPORT
+// 2. 🛡️ SECURE REGISTRATION & WHATSAPP SUPPORT
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -84,14 +74,12 @@ app.post('/api/auth/register', async (req, res) => {
         const cleanEmail = email ? email.toLowerCase().trim() : "";
 
         if (!phone || !name || !userToken || !cleanEmail) {
-            return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
+            return res.json({ success: false, message: "Details zaroori hai!" });
         }
 
-        // 🌟 NEW SECURITY ADDED: Token Verify aur Email Match check
         const decodedToken = await admin.auth().verifyIdToken(userToken);
-        
         if (decodedToken.email !== cleanEmail) {
-            return res.json({ success: false, message: "Security Alert: Token aur Email match nahi ho rahe (Fake Identity)!" });
+            return res.json({ success: false, message: "Fake Identity Alert!" });
         }
 
         let referrerPhone = null;
@@ -109,6 +97,16 @@ app.post('/api/auth/register', async (req, res) => {
             }
         }
 
+        const userSnap = await db.ref(`/users/${phone}`).once('value');
+        if (userSnap.exists()) {
+            return res.json({ 
+                success: false, 
+                message: "⚠️ Yeh Number pehle se registered hai! Purane Gmail se login karein.",
+                showWhatsAppSupport: true, 
+                whatsappLink: `https://wa.me/+918409081468?text=Account%20Recovery%20Request`
+            });
+        }
+
         const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
         const newUser = {
             name, email: cleanEmail, phone, savedVillage: "", savedStreet: "", referCode: newCode,
@@ -116,32 +114,14 @@ app.post('/api/auth/register', async (req, res) => {
             referredBy: referrerPhone || null, referralStatus: referrerPhone ? "pending" : null
         };
 
-        const userSnap = await db.ref(`/users/${phone}`).once('value');
-        if (userSnap.exists()) {
-            const myWhatsAppNumber = "+918409081468"; 
-            const waMessage = encodeURIComponent(`Hi customer support, main Sabzi Fresh app par apna purana Gmail bhool gaya hoon aur naya account nahi bana pa raha.\n\nMera Mobile Number: ${phone}\n\nKripya is number ka fir se account banane ka permission de do taaki main naya account bana sakun.`);
-            
-            return res.json({ 
-                success: false, 
-                message: "⚠️ Yeh Mobile Number pehle se registered hai! Kripya us Gmail se Login karein jo aapne pehle use kiya tha.\n\nAgar aap apna purana Gmail bhool gaye hain ya email band ho gaya hai, toh kripya Admin ko WhatsApp karein.",
-                showWhatsAppSupport: true, 
-                whatsappLink: `https://wa.me/${myWhatsAppNumber}?text=${waMessage}`
-            });
-        }
-
         await db.ref(`/users/${phone}`).set(newUser);
         await db.ref(`/referCodes/${newCode}`).set(phone);
-
         res.json({ success: true, user: newUser });
-
-    } catch (error) {
-        console.error("Register Error:", error);
-        res.json({ success: false, message: "Server Error ya Invalid Token." });
-    }
+    } catch (error) { res.json({ success: false, message: "Invalid Token." }); }
 });
 
 // ==========================================
-// 4. 🛒 SECURE BILL CALCULATOR
+// 3. 🛒 SECURE BILL CALCULATOR
 // ==========================================
 app.post('/api/order/calculate', async (req, res) => {
     try {
@@ -153,7 +133,7 @@ app.post('/api/order/calculate', async (req, res) => {
 
         let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
-        let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
+        let secureSubtotal = 0; let secureItemsList = []; 
 
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
@@ -163,17 +143,7 @@ app.post('/api/order/calculate', async (req, res) => {
                 secureSubtotal += itemTotal;
                 
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-                let itemQtyText = asliProduct.qtyText || "1 Kg"; 
-                
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
-                
-                itemsObj.push({ 
-                    name: itemName, 
-                    nameHi: asliProduct.nameHi || "", 
-                    price: asliProduct.price,         
-                    qty: qty,                         
-                    qtyText: itemQtyText              
-                });
             }
         }
 
@@ -189,34 +159,22 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER
+// 4. 🚀 SECURE ORDER MANAGER (With Stock Check & Full Data)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
         const { cartItems, customerDetails, userToken } = req.body;
+        if (!cartItems || !customerDetails || !userToken) return res.json({ success: false, message: "Invalid data" });
 
-        if (!cartItems || !customerDetails || !customerDetails.phone || !userToken) {
-            return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
-        }
-
-        // ✅ TOKEN VERIFY KARO
         await admin.auth().verifyIdToken(userToken);
 
-        // 🛑 SECURITY CHECK 1: USER BLOCK TOH NAHI HAI?
         const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
-        if (userData && userData.blocked === true) {
-            return res.json({ success: false, message: "Aapka account block hai. Aap order nahi kar sakte." });
-        }
+        if (userData && userData.blocked === true) return res.json({ success: false, message: "Account blocked." });
 
         const settingsDB = (await db.ref('/settings').once('value')).val() || {};
-
-        // 🛑 SECURITY CHECK 2: APP BAND (CLOSED) TOH NAHI HAI?
-        if (settingsDB.isAppClosed === true) {
-            return res.json({ success: false, message: "Abhi dukan band hai. Kripya khulne ke baad order karein." });
-        }
+        if (settingsDB.isAppClosed === true) return res.json({ success: false, message: "Abhi dukan band hai." });
 
         const productsDB = (await db.ref('/products').once('value')).val() || {};
-
         let adminDeliveryFee = settingsDB.deliveryCharge !== undefined ? parseInt(settingsDB.deliveryCharge) : 20;
         let adminFreeLimit = settingsDB.minFreeDeliveryThreshold !== undefined ? parseInt(settingsDB.minFreeDeliveryThreshold) : 100;
 
@@ -225,33 +183,42 @@ app.post('/api/order/place', async (req, res) => {
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
             let asliProduct = productsDB[itemId];
+            
             if (asliProduct && !isNaN(qty) && qty > 0) {
+                
+                // 🛑 STRICT PRE-ORDER STOCK CHECK 🛑
+                let currentStock = parseFloat(asliProduct.stock) || 0;
+                if (currentStock < qty) {
+                    return res.json({ 
+                        success: false, 
+                        message: `Sorry, '${asliProduct.nameEn || "Item"}' available nahi hai ya stock kam hai. Sirf ${currentStock} bache hain.` 
+                    });
+                }
+
                 let itemTotal = asliProduct.price * qty;
                 secureSubtotal += itemTotal;
                 
                 let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-                let itemQtyText = asliProduct.qtyText || "1 Kg"; 
-                
-                // Telegram ke liye text format ready kar rahe hain
+                let itemQtyText = asliProduct.qtyText || "1 Kg";
                 secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
                 
-                // Firebase ke liye object ready kar rahe hain
+                // ✅ HINDI NAME & QTY TEXT RESTORED HERE
                 itemsObj.push({ 
+                    id: itemId, 
                     name: itemName, 
                     nameHi: asliProduct.nameHi || "", 
-                    price: itemTotal,   
-                    basePrice: asliProduct.price, 
+                    price: itemTotal,
+                    basePrice: asliProduct.price,
                     qty: qty,                         
-                    qtyText: itemQtyText              
+                    qtyText: itemQtyText
                 });
             }
         }
 
-        if (secureSubtotal === 0) return res.json({ success: false, message: "Cart is empty" });
+        if (secureSubtotal === 0) return res.json({ success: false, message: "Cart empty" });
 
         let secureDeliveryCharge = (secureSubtotal > 0 && secureSubtotal < adminFreeLimit) ? adminDeliveryFee : 0;
 
-        // Reward system ke liye userData use kiya (Server speed fast hogi)
         if (customerDetails.usedReward && secureSubtotal > 0 && userData && parseInt(userData.freeDeliveries) > 0) {
             secureDeliveryCharge = 0; 
             let newFreeDel = parseInt(userData.freeDeliveries) - 1;
@@ -260,27 +227,32 @@ app.post('/api/order/place', async (req, res) => {
         
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-        const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
+        // 🧠 ZOMATO-STYLE AUTO-ASSIGN LOGIC
+        let assignedRiderEmail = null;
+        const ridersSnap = await db.ref('/riders').orderByChild('status').equalTo('online').once('value');
+        if(ridersSnap.exists()) {
+            const ridersData = ridersSnap.val();
+            const onlineRiders = Object.values(ridersData);
+            const selectedRider = onlineRiders[Math.floor(Math.random() * onlineRiders.length)];
+            assignedRiderEmail = selectedRider.email;
+        }
+
+        const orderId = "SF" + Date.now().toString(36).toUpperCase().substr(4,6);
         const orderTimestamp = Date.now();
 
-        // ✅ CLEAN DATA: Sirf zaroori fields, faltu date/time/itemsList hata diya
         const orderData = {
-            id: orderId, 
-            timestamp: orderTimestamp, 
-            status: "Packing in Progress ⏳", 
-            total: secureFinalTotal, 
-            deliveryCharge: secureDeliveryCharge,
-            customer: customerDetails.name, 
-            phone: customerDetails.phone, 
-            email: customerDetails.email || '',
-            address: customerDetails.address, 
-            items: itemsObj, 
+            id: orderId, timestamp: orderTimestamp, status: "Packing in Progress ⏳", 
+            total: secureFinalTotal, deliveryCharge: secureDeliveryCharge,
+            customer: customerDetails.name, phone: customerDetails.phone, 
+            address: customerDetails.address, items: itemsObj, 
+            assignedRider: assignedRiderEmail,
             usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
         };
 
+        // 1. Save Order
         await db.ref(`/orders/${orderId}`).set(orderData);
 
-        // Telegram Par Notification
+        // 2. Telegram Alert for Admin
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
             fetch(TELEGRAM_SCRIPT_URL, {
@@ -289,16 +261,67 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        res.json({ success: true, orderId: orderId, orderTimestamp: orderTimestamp });
+        // 3. 🔔 RIDER PUSH NOTIFICATION (Assigned Rider Only)
+        if (assignedRiderEmail && ONESIGNAL_APP_ID && ONESIGNAL_REST_KEY) {
+            try {
+                const payload = {
+                    app_id: ONESIGNAL_APP_ID,
+                    filters: [{ field: "tag", key: "rider_email", relation: "=", value: assignedRiderEmail }],
+                    headings: { en: "🚨 Naya Order Aaya Hai!" },
+                    contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai. App khol kar accept karein!` }
+                };
 
+                fetch("https://onesignal.com/api/v1/notifications", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` },
+                    body: JSON.stringify(payload)
+                }).catch(err => console.log("OneSignal Request failed"));
+                
+            } catch(e) { console.log("Rider Notification Error"); }
+        }
+
+        res.json({ success: true, orderId: orderId, orderTimestamp: orderTimestamp });
+    } catch (error) { res.json({ success: false, message: "Order Fail." }); }
+});
+
+// ==========================================
+// 5. 🛵 RIDER API: STATUS UPDATE & LIVE STOCK MINUS
+// ==========================================
+app.post('/api/order/rider-update', async (req, res) => {
+    try {
+        const { orderId, newStatus, riderToken } = req.body;
+        if (!orderId || !newStatus || !riderToken) return res.json({ success: false, message: "Missing info" });
+
+        await admin.auth().verifyIdToken(riderToken);
+
+        // 🛑 STOCK MINUS LOGIC
+        if (newStatus === 'Confirmed') {
+            const orderSnap = await db.ref(`/orders/${orderId}`).once('value');
+            const orderData = orderSnap.val();
+            
+            if (orderData && orderData.items) {
+                for (let item of orderData.items) {
+                    const productRef = db.ref(`/products/${item.id}`);
+                    await productRef.transaction((product) => {
+                        if (product) {
+                            product.stock = (product.stock || 0) - item.qty;
+                            if (product.stock < 0) product.stock = 0; 
+                        }
+                        return product;
+                    });
+                }
+            }
+        }
+
+        await db.ref(`/orders/${orderId}`).update({ status: newStatus });
+        res.json({ success: true, message: "Status and Stock Updated" });
     } catch (error) {
-        console.error("Order Manager Error:", error);
-        res.json({ success: false, message: "VIP Token Invalid ya Order Fail ho gaya" });
+        res.json({ success: false, message: "Network Error 🌐: Update fail ho gaya." });
     }
 });
 
 // ==========================================
-// 6. 🎁 ORDER DELIVER HONE PAR REWARD DENA
+// 6. 🎁 ADMIN: ORDER DELIVERED & REWARD PROCESSING
 // ==========================================
 app.post('/api/order/update-status', async (req, res) => {
     try {
@@ -331,14 +354,11 @@ app.post('/api/order/update-status', async (req, res) => {
             }
         }
         res.json({ success: true, message: "Status updated" });
-
-    } catch (error) {
-        res.json({ success: false, message: error.message });
-    }
+    } catch (error) { res.json({ success: false, message: error.message }); }
 });
 
 // ==========================================
-// 7. 🎁 MANUAL REWARD DENA
+// 7. 🎁 ADMIN: MANUAL REWARD DENA
 // ==========================================
 app.post('/api/admin/give-reward', async (req, res) => {
     try {
@@ -361,21 +381,17 @@ app.post('/api/admin/give-reward', async (req, res) => {
         });
 
         res.json({ success: true, message: `Reward manually added to ${targetPhone}` });
-
-    } catch (error) {
-        res.json({ success: false, message: error.message });
-    }
+    } catch (error) { res.json({ success: false, message: error.message }); }
 });
 
 // ==========================================
-// 8. 🚫 SECURE ORDER CANCEL
+// 8. 🚫 SECURE ORDER CANCEL (Customer)
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
         const { orderId, cancelReason, userToken } = req.body;
         if (!orderId || !userToken) return res.json({ success: false, message: "Missing info" });
 
-        // Token verify
         await admin.auth().verifyIdToken(userToken);
 
         const orderData = (await db.ref(`/orders/${orderId}`).once('value')).val();
@@ -397,15 +413,58 @@ app.post('/api/order/cancel', async (req, res) => {
                 await db.ref(`/users/${orderData.phone}`).update({ cancelCount: newCancelCount });
             }
         }
-
         res.json({ success: true, message: "Order successfully cancel ho gaya." });
+    } catch (error) { res.json({ success: false, message: "Server error" }); }
+});
 
-    } catch (error) {
-        res.json({ success: false, message: "Server error" });
-    }
+// ==========================================
+// 9. 👨‍💼 ADMIN: CREATE RIDER ACCOUNT
+// ==========================================
+app.post('/api/admin/create-rider', async (req, res) => {
+    try {
+        const { name, email, password, phone, adminToken } = req.body;
+        const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
+        if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') return res.json({ success: false, message: "Access denied" });
+
+        const userRecord = await admin.auth().createUser({ email, password, displayName: name });
+        await db.ref(`/riders/${userRecord.uid}`).set({
+            name, email, phone, status: 'offline', createdAt: Date.now()
+        });
+
+        res.json({ success: true, message: "Rider successfully ban gaya!" });
+    } catch (error) { res.json({ success: false, message: error.message }); }
+});
+
+// ==========================================
+// 10. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
+// ==========================================
+app.post('/api/admin/send-notification', async (req, res) => {
+    try {
+        const { title, message, adminToken } = req.body;
+        const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
+        if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') return res.json({ success: false, message: "Access denied" });
+
+        if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_KEY) return res.json({ success: false, message: "OneSignal Keys Missing" });
+
+        const payload = {
+            app_id: ONESIGNAL_APP_ID,
+            included_segments: ["All"],
+            headings: { en: title },
+            contents: { en: message }
+        };
+
+        const response = await fetch("https://onesignal.com/api/v1/notifications", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        res.json({ success: true, response: data });
+    } catch (error) { res.json({ success: false, message: "Notification send fail." }); }
 });
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-    console.log(`Server port ${PORT} par chal raha hai`);
+    console.log(`Server port ${PORT} par ekdum secure chal raha hai!`);
 });
