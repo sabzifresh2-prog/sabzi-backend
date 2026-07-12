@@ -201,7 +201,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (With Rider Variables)
+// 5. 🚀 SECURE ORDER MANAGER (With Rider Variables & Logs)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -335,28 +335,43 @@ app.post('/api/order/place', async (req, res) => {
 
         await db.ref(`/orders/${orderId}`).set(orderData);
 
-        // Telegram Notification
+        // Telegram Notification (Wait aur log ke sath)
         if(TELEGRAM_SCRIPT_URL) {
             const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
-            fetch(TELEGRAM_SCRIPT_URL, {
+            await fetch(TELEGRAM_SCRIPT_URL, {
                 method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: new URLSearchParams({ 'message': teleMessage })
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // ✅ RIDER APP NOTIFICATION (Ab yahan RIDER wale variables use honge)
+        // ✅ RIDER APP NOTIFICATION (With AWAIT & ERROR LOGGING)
+        console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}, AppID_Set=${!!ONESIGNAL_RIDER_APP_ID}, RestKey_Set=${!!ONESIGNAL_RIDER_REST_KEY}`);
+        
         if (assignedRiderEmail && ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
             try {
+                console.log(`🔔 Sending OneSignal Push to: ${assignedRiderEmail}`);
                 const payload = {
                     app_id: ONESIGNAL_RIDER_APP_ID,
                     filters: [{ field: "tag", key: "rider_email", relation: "=", value: assignedRiderEmail }],
                     headings: { en: "🚨 Naya Order Aaya Hai!" },
                     contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai.` }
                 };
-                fetch("https://onesignal.com/api/v1/notifications", {
-                    method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_RIDER_REST_KEY}` }, body: JSON.stringify(payload)
-                }).catch(err => console.log("OneSignal Request failed"));
-            } catch(e) {}
+                
+                const osResponse = await fetch("https://onesignal.com/api/v1/notifications", {
+                    method: "POST", 
+                    headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_RIDER_REST_KEY}` }, 
+                    body: JSON.stringify(payload)
+                });
+                
+                const osData = await osResponse.json();
+                console.log("✅ OneSignal Response Body:", osData); 
+                
+            } catch(e) {
+                console.error("🚨 OneSignal Request Failed Completely:", e);
+            }
+        } else {
+            console.log("⚠️ NOTIFICATION SKIPPED! Wajah: ", 
+                !assignedRiderEmail ? "Koi Rider Online Nahi Hai (AssignedRider Null Hai)" : "Render mein OneSignal Variables missing ya galat hain!");
         }
 
         res.json({ success: true, orderId: orderId, orderTimestamp: orderTimestamp });
