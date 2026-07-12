@@ -201,7 +201,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (With NEW OneSignal API URL)
+// 5. 🚀 SECURE ORDER MANAGER 
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -344,7 +344,7 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // ✅ RIDER APP NOTIFICATION (🚨 Naya URL aur "Key" format laga diya hai)
+        // ✅ RIDER APP NOTIFICATION (Updated Authorization & URL)
         console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}`);
         
         if (assignedRiderEmail && ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
@@ -357,13 +357,13 @@ app.post('/api/order/place', async (req, res) => {
                     contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai.` }
                 };
                 
-                // 🚨 NAYA API URL: api.onesignal.com 🚨
-                const osResponse = await fetch("https://api.onesignal.com/notifications", {
+                // 🚨 NAYA API URL aur "Basic" Authorization 🚨
+                const osResponse = await fetch("https://onesignal.com/api/v1/notifications", {
                     method: "POST", 
                     headers: { 
                         "Content-Type": "application/json", 
                         "Accept": "application/json",
-                        "Authorization": `Key ${ONESIGNAL_RIDER_REST_KEY}` 
+                        "Authorization": `Basic ${ONESIGNAL_RIDER_REST_KEY}` 
                     }, 
                     body: JSON.stringify(payload)
                 });
