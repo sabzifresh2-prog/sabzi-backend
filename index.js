@@ -17,9 +17,9 @@ const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 const ONESIGNAL_APP_ID = (process.env.ONESIGNAL_APP_ID || "").trim(); 
 const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim(); 
 
-// 🛵 RIDER Ke Liye Nayi OneSignal Keys (🚨 NAYI KEY KE SATH)
+// 🛵 RIDER Ke Liye Nayi OneSignal Keys 
 const ONESIGNAL_RIDER_APP_ID = "da51535a-56e2-424e-ac89-0fd96616679f"; 
-const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4dfnwl7lgfekpmeuinyex6wzbumxdq3eu6roivuwsggkwklvm3iabtqmw7f474alz56uy6guorcg3i"; 
+const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4dfnwl7lgfekpmeuinyex6wzbumxdq3eu6roivuwsggkwklvm3iabtqmw7f474alz56uy6guorcg3i".trim(); 
 
 // ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -201,7 +201,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (With Logs & Corrected Header)
+// 5. 🚀 SECURE ORDER MANAGER (With NEW OneSignal API URL)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -344,8 +344,8 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // ✅ RIDER APP NOTIFICATION (WAPAS "Basic" LAGA DIYA HAI MERI GALTI THEEK KARKE)
-        console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}, AppID_Set=${!!ONESIGNAL_RIDER_APP_ID}, RestKey_Set=${!!ONESIGNAL_RIDER_REST_KEY}`);
+        // ✅ RIDER APP NOTIFICATION (🚨 Naya URL aur "Key" format laga diya hai)
+        console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}`);
         
         if (assignedRiderEmail && ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
             try {
@@ -357,12 +357,13 @@ app.post('/api/order/place', async (req, res) => {
                     contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai.` }
                 };
                 
-                const osResponse = await fetch("https://onesignal.com/api/v1/notifications", {
+                // 🚨 NAYA API URL: api.onesignal.com 🚨
+                const osResponse = await fetch("https://api.onesignal.com/notifications", {
                     method: "POST", 
                     headers: { 
                         "Content-Type": "application/json", 
                         "Accept": "application/json",
-                        "Authorization": `Basic ${ONESIGNAL_RIDER_REST_KEY}` 
+                        "Authorization": `Key ${ONESIGNAL_RIDER_REST_KEY}` 
                     }, 
                     body: JSON.stringify(payload)
                 });
@@ -373,9 +374,6 @@ app.post('/api/order/place', async (req, res) => {
             } catch(e) {
                 console.error("🚨 OneSignal Request Failed Completely:", e);
             }
-        } else {
-            console.log("⚠️ NOTIFICATION SKIPPED! Wajah: ", 
-                !assignedRiderEmail ? "Koi Rider Online Nahi Hai (AssignedRider Null Hai)" : "Render mein OneSignal Variables missing ya galat hain!");
         }
 
         res.json({ success: true, orderId: orderId, orderTimestamp: orderTimestamp });
@@ -576,7 +574,7 @@ app.post('/api/admin/create-rider', async (req, res) => {
 });
 
 // ==========================================
-// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
+// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION (Customer app - purani API)
 // ==========================================
 app.post('/api/admin/send-notification', async (req, res) => {
     try {
@@ -584,7 +582,6 @@ app.post('/api/admin/send-notification', async (req, res) => {
         const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
         if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') return res.json({ success: false, message: "Access denied" });
 
-        // ✅ Yeh purane keys (Customer) ka hi use karega taaki bulk message customers ko jaye
         if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_KEY) return res.json({ success: false, message: "OneSignal Keys Missing" });
 
         const payload = {
