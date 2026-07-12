@@ -367,9 +367,8 @@ app.post('/api/order/place', async (req, res) => {
         res.json({ success: false, message: "VIP Token Invalid ya Order Fail ho gaya" });
     }
 });
-
 // ==========================================
-// 6. 🛵 RIDER API: STATUS UPDATE
+// 6. 🛵 RIDER API: STATUS UPDATE (With Auto Reward Fix)
 // ==========================================
 app.post('/api/order/rider-update', async (req, res) => {
     try {
@@ -396,10 +395,37 @@ app.post('/api/order/rider-update', async (req, res) => {
         const updates = { status: newStatus };
         if (newStatus === 'Confirmed') updates.assignedRider = riderEmail;
 
+        // Status update kar diya
         await db.ref(`/orders/${orderId}`).update(updates);
+
+        // ✅ NEW ADDITION: Agar rider ne Delivered mark kiya hai, toh reward de do
+        if (newStatus === "Delivered") {
+            if (orderData && orderData.phone) {
+                const customerPhone = orderData.phone;
+                const userData = (await db.ref(`/users/${customerPhone}`).once('value')).val();
+
+                if (userData && userData.referredBy && userData.referralStatus === "pending") {
+                    const referrerPhone = userData.referredBy;
+                    const referrerData = (await db.ref(`/users/${referrerPhone}`).once('value')).val();
+
+                    if (referrerData) {
+                        let currentFreeDel = parseInt(referrerData.freeDeliveries) || 0;
+                        let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); 
+
+                        // Referrer ko 3 free delivery aur customer ka status complete mark karna
+                        await db.ref(`/users/${referrerPhone}`).update({ freeDeliveries: currentFreeDel + 3, rewardExpiry: newExpiry });
+                        await db.ref(`/users/${customerPhone}`).update({ referralStatus: "completed" });
+                    }
+                }
+            }
+        }
+
         res.json({ success: true, message: "Status Updated Successfully" });
-    } catch (error) { res.json({ success: false, message: "Update fail ho gaya." }); }
+    } catch (error) { 
+        res.json({ success: false, message: "Update fail ho gaya." }); 
+    }
 });
+
 
 // ==========================================
 // 7. 🎁 ADMIN: ORDER DELIVER HONE PAR REWARD
