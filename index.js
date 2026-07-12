@@ -13,13 +13,13 @@ const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// 👨‍👩‍👧‍👦 Customer Ke Liye OneSignal Keys (Purani wali - Bulk message ke liye)
+// 👨‍👩‍👧‍👦 Customer Ke Liye OneSignal Keys
 const ONESIGNAL_APP_ID = (process.env.ONESIGNAL_APP_ID || "").trim(); 
 const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim(); 
 
-// 🛵 RIDER Ke Liye Nayi OneSignal Keys 
+// 🛵 RIDER Ke Liye Nayi OneSignal Keys (Aapki Nayi Key Yahan Daal Di Hai 👇)
 const ONESIGNAL_RIDER_APP_ID = "da51535a-56e2-424e-ac89-0fd96616679f"; 
-const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4dfnwl7lgfekpmeuinyex6wzbumxdq3eu6roivuwsggkwklvm3iabtqmw7f474alz56uy6guorcg3i".trim(); 
+const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4bgl6igx2puvhvjctihpdbac5vo5zelm3ywi7gt7cud3v45eu6wdqr6drqd7vjgi4afxzvxv44s5oa".trim(); 
 
 // ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -344,7 +344,7 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // ✅ RIDER APP NOTIFICATION (Updated Authorization & URL)
+        // ✅ RIDER APP NOTIFICATION (Nayi Key aur sahi Header ke sath)
         console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}`);
         
         if (assignedRiderEmail && ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
@@ -357,7 +357,7 @@ app.post('/api/order/place', async (req, res) => {
                     contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai.` }
                 };
                 
-                // 🚨 NAYA API URL aur "Basic" Authorization 🚨
+                // 🚨 NAYA API URL aur Logs ke hisaab se "Basic" Authorization 🚨
                 const osResponse = await fetch("https://onesignal.com/api/v1/notifications", {
                     method: "POST", 
                     headers: { 
@@ -574,7 +574,7 @@ app.post('/api/admin/create-rider', async (req, res) => {
 });
 
 // ==========================================
-// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION (Customer app - purani API)
+// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION (Customer app)
 // ==========================================
 app.post('/api/admin/send-notification', async (req, res) => {
     try {
