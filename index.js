@@ -19,7 +19,7 @@ const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim();
 
 // 🛵 RIDER Ke Liye Nayi OneSignal Keys (🚨 TEMPORARY HARDCODED FOR TESTING)
 const ONESIGNAL_RIDER_APP_ID = "da51535a-56e2-424e-ac89-0fd96616679f"; 
-const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4dfnwl7lgfekpmeuinyex6wzbumxdq3eu6roivuwsggkwklvm3iabtqmw7f474alz56uy6guorcg3i"; 
+const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4dfnwl7lgfekpmeuinyex6wzbumxdq3eu6roivuwsggkwklvm3iabtqmw7f474alz56uy6guorcg3i".trim(); 
 
 // ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -344,7 +344,7 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // ✅ RIDER APP NOTIFICATION (With AWAIT & ERROR LOGGING)
+        // ✅ RIDER APP NOTIFICATION (YAHAN PAR NAYA 'Key' FORMAT LAGA DIYA HAI)
         console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}, AppID_Set=${!!ONESIGNAL_RIDER_APP_ID}, RestKey_Set=${!!ONESIGNAL_RIDER_REST_KEY}`);
         
         if (assignedRiderEmail && ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
@@ -359,7 +359,11 @@ app.post('/api/order/place', async (req, res) => {
                 
                 const osResponse = await fetch("https://onesignal.com/api/v1/notifications", {
                     method: "POST", 
-                    headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_RIDER_REST_KEY}` }, 
+                    headers: { 
+                        "Content-Type": "application/json", 
+                        "Accept": "application/json",
+                        "Authorization": `Key ${ONESIGNAL_RIDER_REST_KEY}` 
+                    }, 
                     body: JSON.stringify(payload)
                 });
                 
