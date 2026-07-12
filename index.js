@@ -12,8 +12,14 @@ app.use(express.json());
 const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
-const ONESIGNAL_APP_ID = (process.env.ONESIGNAL_APP_ID || "").trim(); // For Rider Notifications
+
+// 👨‍👩‍👧‍👦 Customer Ke Liye OneSignal Keys (Purani wali - Bulk message ke liye)
+const ONESIGNAL_APP_ID = (process.env.ONESIGNAL_APP_ID || "").trim(); 
 const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim(); 
+
+// 🛵 RIDER Ke Liye Nayi OneSignal Keys (Sirf Order aane par baje ga)
+const ONESIGNAL_RIDER_APP_ID = (process.env.ONESIGNAL_RIDER_APP_ID || "").trim(); 
+const ONESIGNAL_RIDER_REST_KEY = (process.env.ONESIGNAL_RIDER_REST_KEY || "").trim(); 
 
 // ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -142,7 +148,7 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // ==========================================
-// 4. 🛒 SECURE BILL CALCULATOR (Advanced Data Logic, Clean UI)
+// 4. 🛒 SECURE BILL CALCULATOR
 // ==========================================
 app.post('/api/order/calculate', async (req, res) => {
     try {
@@ -152,7 +158,6 @@ app.post('/api/order/calculate', async (req, res) => {
         const productsDB = (await db.ref('/products').once('value')).val() || {};
         const settingsDB = (await db.ref('/settings').once('value')).val() || {};
 
-        // ✅ ADVANCED: Strict Firebase Values (No Defaults)
         let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 0;
         let adminFreeLimit = parseInt(settingsDB.minFreeDeliveryThreshold) || 0;
         
@@ -196,7 +201,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (With Smart Assign & Atomic Stock)
+// 5. 🚀 SECURE ORDER MANAGER (With Rider Variables)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -221,7 +226,6 @@ app.post('/api/order/place', async (req, res) => {
 
         let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
         
-        // PRE-CHECK: Bill banao
         for (let itemId in cartItems) {
             let qty = parseFloat(cartItems[itemId]);
             let asliProduct = productsDB[itemId];
@@ -246,7 +250,6 @@ app.post('/api/order/place', async (req, res) => {
 
         if (secureSubtotal === 0) return res.json({ success: false, message: "Cart is empty" });
 
-        // ✅ ADVANCED: ATOMIC STOCK DEDUCTION (Race condition fix)
         let stockDeducted = [];
         let transactionFailed = false;
         let failedItemName = "";
@@ -260,7 +263,7 @@ app.post('/api/order/place', async (req, res) => {
                         product.stock = currentStock - item.qty; 
                         return product;
                     } else {
-                        return undefined; // Fail transaction
+                        return undefined;
                     }
                 }
                 return null;
@@ -270,7 +273,6 @@ app.post('/api/order/place', async (req, res) => {
             else { transactionFailed = true; failedItemName = item.name; break; }
         }
 
-        // ROLLBACK agar ek item bhi fail ho gaya
         if (transactionFailed) {
             for (let dItem of stockDeducted) {
                 await db.ref(`/products/${dItem.id}`).transaction((product) => {
@@ -291,7 +293,6 @@ app.post('/api/order/place', async (req, res) => {
         
         let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-        // ✅ ADVANCED: SMART RIDER ASSIGN (Load Balancing)
         let assignedRiderEmail = null;
         const ridersSnap = await db.ref('/riders').orderByChild('status').equalTo('online').once('value');
         if (ridersSnap.exists()) {
@@ -314,11 +315,9 @@ app.post('/api/order/place', async (req, res) => {
             assignedRiderEmail = bestRiders[Math.floor(Math.random() * bestRiders.length)].email;
         }
 
-        // ID Generation (Clean format preferred by you)
         const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,4).toUpperCase();
         const orderTimestamp = Date.now();
 
-        // Save order data exactly in your clean structure
         const orderData = {
             id: orderId, 
             timestamp: orderTimestamp, 
@@ -345,17 +344,17 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // Rider App Notification (OneSignal)
-        if (assignedRiderEmail && ONESIGNAL_APP_ID && ONESIGNAL_REST_KEY) {
+        // ✅ RIDER APP NOTIFICATION (Ab yahan RIDER wale variables use honge)
+        if (assignedRiderEmail && ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
             try {
                 const payload = {
-                    app_id: ONESIGNAL_APP_ID,
+                    app_id: ONESIGNAL_RIDER_APP_ID,
                     filters: [{ field: "tag", key: "rider_email", relation: "=", value: assignedRiderEmail }],
                     headings: { en: "🚨 Naya Order Aaya Hai!" },
                     contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai.` }
                 };
                 fetch("https://onesignal.com/api/v1/notifications", {
-                    method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` }, body: JSON.stringify(payload)
+                    method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_RIDER_REST_KEY}` }, body: JSON.stringify(payload)
                 }).catch(err => console.log("OneSignal Request failed"));
             } catch(e) {}
         }
@@ -367,8 +366,9 @@ app.post('/api/order/place', async (req, res) => {
         res.json({ success: false, message: "VIP Token Invalid ya Order Fail ho gaya" });
     }
 });
+
 // ==========================================
-// 6. 🛵 RIDER API: STATUS UPDATE (With Auto Reward Fix)
+// 6. 🛵 RIDER API: STATUS UPDATE
 // ==========================================
 app.post('/api/order/rider-update', async (req, res) => {
     try {
@@ -395,10 +395,8 @@ app.post('/api/order/rider-update', async (req, res) => {
         const updates = { status: newStatus };
         if (newStatus === 'Confirmed') updates.assignedRider = riderEmail;
 
-        // Status update kar diya
         await db.ref(`/orders/${orderId}`).update(updates);
 
-        // ✅ NEW ADDITION: Agar rider ne Delivered mark kiya hai, toh reward de do
         if (newStatus === "Delivered") {
             if (orderData && orderData.phone) {
                 const customerPhone = orderData.phone;
@@ -412,7 +410,6 @@ app.post('/api/order/rider-update', async (req, res) => {
                         let currentFreeDel = parseInt(referrerData.freeDeliveries) || 0;
                         let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); 
 
-                        // Referrer ko 3 free delivery aur customer ka status complete mark karna
                         await db.ref(`/users/${referrerPhone}`).update({ freeDeliveries: currentFreeDel + 3, rewardExpiry: newExpiry });
                         await db.ref(`/users/${customerPhone}`).update({ referralStatus: "completed" });
                     }
@@ -425,7 +422,6 @@ app.post('/api/order/rider-update', async (req, res) => {
         res.json({ success: false, message: "Update fail ho gaya." }); 
     }
 });
-
 
 // ==========================================
 // 7. 🎁 ADMIN: ORDER DELIVER HONE PAR REWARD
@@ -494,7 +490,7 @@ app.post('/api/admin/give-reward', async (req, res) => {
 });
 
 // ==========================================
-// 9. 🚫 SECURE ORDER CANCEL (With Stock Restore)
+// 9. 🚫 SECURE ORDER CANCEL
 // ==========================================
 app.post('/api/order/cancel', async (req, res) => {
     try {
@@ -510,10 +506,8 @@ app.post('/api/order/cancel', async (req, res) => {
             return res.json({ success: false, message: "Order pack ho chuka hai, ab cancel nahi ho sakta." });
         }
 
-        // ✅ ADVANCED: Cancel par Stock wapas plus (+) karna
         if (orderData.items && orderData.items.length > 0) {
             for (let item of orderData.items) {
-                // Ensure id maujood hai
                 if (item.id) {
                     const productRef = db.ref(`/products/${item.id}`);
                     await productRef.transaction((product) => {
@@ -571,6 +565,7 @@ app.post('/api/admin/send-notification', async (req, res) => {
         const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
         if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') return res.json({ success: false, message: "Access denied" });
 
+        // ✅ Yeh purane keys (Customer) ka hi use karega taaki bulk message customers ko jaye
         if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_KEY) return res.json({ success: false, message: "OneSignal Keys Missing" });
 
         const payload = {
