@@ -19,7 +19,7 @@ const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim();
 
 // 🛵 RIDER Ke Liye Nayi OneSignal Keys (🚨 TEMPORARY HARDCODED FOR TESTING)
 const ONESIGNAL_RIDER_APP_ID = "da51535a-56e2-424e-ac89-0fd96616679f"; 
-const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht7hh76rrn5eubvv6j7tmsucwk2ht2pd5nqttjital2a5vl2gweajtw55nyczts3njzv4icnyq5jkzuy"; 
+const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4dfnwl7lgfekpmeuinyex6wzbumxdq3eu6roivuwsggkwklvm3iabtqmw7f474alz56uy6guorcg3i"; 
 
 // ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
