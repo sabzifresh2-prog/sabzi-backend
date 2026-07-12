@@ -17,9 +17,9 @@ const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 const ONESIGNAL_APP_ID = (process.env.ONESIGNAL_APP_ID || "").trim(); 
 const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim(); 
 
-// 🛵 RIDER Ke Liye Nayi OneSignal Keys (Sirf Order aane par baje ga)
-const ONESIGNAL_RIDER_APP_ID = (process.env.ONESIGNAL_RIDER_APP_ID || "").trim(); 
-const ONESIGNAL_RIDER_REST_KEY = (process.env.ONESIGNAL_RIDER_REST_KEY || "").trim(); 
+// 🛵 RIDER Ke Liye Nayi OneSignal Keys (🚨 TEMPORARY HARDCODED FOR TESTING)
+const ONESIGNAL_RIDER_APP_ID = "da51535a-56e2-424e-ac89-0fd96616679f"; 
+const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht7hh76rrn5eubvv6j7tmsucwk2ht2pd5nqttjital2a5vl2gweajtw55nyczts3njzv4icnyq5jkzuy"; 
 
 // ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -201,7 +201,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER (With Rider Variables & Logs)
+// 5. 🚀 SECURE ORDER MANAGER (With Logs & Direct Keys)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
