@@ -13,13 +13,13 @@ const OTP_SCRIPT_URL = (process.env.OTP_SCRIPT_URL || "").trim();
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 const OTP_SECRET_KEY = (process.env.OTP_SECRET_KEY || "").trim();
 
-// 👨‍👩‍👧‍👦 Customer Ke Liye OneSignal Keys
+// 👨‍👩‍👧‍👦 Customer Ke Liye OneSignal Keys (Purani wali - Bulk message ke liye)
 const ONESIGNAL_APP_ID = (process.env.ONESIGNAL_APP_ID || "").trim(); 
 const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim(); 
 
-// 🛵 RIDER Ke Liye Nayi OneSignal Keys (Aapki Nayi Key Yahan Daal Di Hai 👇)
-const ONESIGNAL_RIDER_APP_ID = "da51535a-56e2-424e-ac89-0fd96616679f"; 
-const ONESIGNAL_RIDER_REST_KEY = "os_v2_app_3jivgwsw4jbe5lejb7mwmftht4bgl6igx2puvhvjctihpdbac5vo5zelm3ywi7gt7cud3v45eu6wdqr6drqd7vjgi4afxzvxv44s5oa".trim(); 
+// 🛵 RIDER Ke Liye Nayi OneSignal Keys (✅ WAPAS VARIABLES MEIN)
+const ONESIGNAL_RIDER_APP_ID = (process.env.ONESIGNAL_RIDER_APP_ID || "").trim(); 
+const ONESIGNAL_RIDER_REST_KEY = (process.env.ONESIGNAL_RIDER_REST_KEY || "").trim(); 
 
 // ✅ FINAL: Render ke Environment Variable se JSON read karna
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -201,7 +201,7 @@ app.post('/api/order/calculate', async (req, res) => {
 });
 
 // ==========================================
-// 5. 🚀 SECURE ORDER MANAGER 
+// 5. 🚀 SECURE ORDER MANAGER (With Logs, Variables & Legacy API)
 // ==========================================
 app.post('/api/order/place', async (req, res) => {
     try {
@@ -344,8 +344,8 @@ app.post('/api/order/place', async (req, res) => {
             }).catch(e => console.log("Telegram error: ", e));
         }
 
-        // ✅ RIDER APP NOTIFICATION (Nayi Key aur sahi Header ke sath)
-        console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}`);
+        // ✅ RIDER APP NOTIFICATION (100% LEGACY API & VARIABLES FORMAT)
+        console.log(`🔍 Checking Notification: RiderEmail=${assignedRiderEmail}, AppID_Set=${!!ONESIGNAL_RIDER_APP_ID}, RestKey_Set=${!!ONESIGNAL_RIDER_REST_KEY}`);
         
         if (assignedRiderEmail && ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
             try {
@@ -357,7 +357,6 @@ app.post('/api/order/place', async (req, res) => {
                     contents: { en: `Order #${orderId} - ₹${secureFinalTotal} ki delivery hai.` }
                 };
                 
-                // 🚨 NAYA API URL aur Logs ke hisaab se "Basic" Authorization 🚨
                 const osResponse = await fetch("https://onesignal.com/api/v1/notifications", {
                     method: "POST", 
                     headers: { 
@@ -374,6 +373,9 @@ app.post('/api/order/place', async (req, res) => {
             } catch(e) {
                 console.error("🚨 OneSignal Request Failed Completely:", e);
             }
+        } else {
+            console.log("⚠️ NOTIFICATION SKIPPED! Wajah: ", 
+                !assignedRiderEmail ? "Koi Rider Online Nahi Hai (AssignedRider Null Hai)" : "Render mein OneSignal Variables missing ya galat hain!");
         }
 
         res.json({ success: true, orderId: orderId, orderTimestamp: orderTimestamp });
@@ -574,7 +576,7 @@ app.post('/api/admin/create-rider', async (req, res) => {
 });
 
 // ==========================================
-// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION (Customer app)
+// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
 // ==========================================
 app.post('/api/admin/send-notification', async (req, res) => {
     try {
