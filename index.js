@@ -385,9 +385,8 @@ app.post('/api/order/place', async (req, res) => {
         res.json({ success: false, message: "VIP Token Invalid ya Order Fail ho gaya" });
     }
 });
-
 // ==========================================
-// 6. 🛵 RIDER API: STATUS UPDATE
+// 6. 🛵 RIDER API: STATUS UPDATE (Secure Stock & Reward)
 // ==========================================
 app.post('/api/order/rider-update', async (req, res) => {
     try {
@@ -397,13 +396,11 @@ app.post('/api/order/rider-update', async (req, res) => {
         const decodedRider = await admin.auth().verifyIdToken(riderToken);
         const riderEmail = decodedRider.email;
 
-        const riderRecordSnap = await db.ref(`/riders/${decodedRider.uid}`).once('value');
-        if (!riderRecordSnap.exists()) return res.json({ success: false, message: "Rider account not found." });
-
         const ALLOWED = ['Packing in Progress', 'Confirmed', 'Out for Delivery', 'Delivered', 'Returned/Rejected', 'Cancelled by SabziFresh'];
         if (!ALLOWED.some(a => newStatus.includes(a.split(' ')[0]))) return res.json({ success: false, message: "Invalid status." });
 
-        const orderSnap = await db.ref(`/orders/${orderId}`).once('value');
+        const orderRef = db.ref(`/orders/${orderId}`);
+        const orderSnap = await orderRef.once('value');
         const orderData = orderSnap.val();
         if (!orderData) return res.json({ success: false, message: "Order not found." });
 
@@ -411,39 +408,57 @@ app.post('/api/order/rider-update', async (req, res) => {
             return res.json({ success: false, message: "Yeh order kisi aur rider ke paas hai." });
         }
 
-        const updates = { status: newStatus };
-        if (newStatus === 'Confirmed') updates.assignedRider = riderEmail;
+        const wasActive = !['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(orderData.status);
+        const isNowCancelled = ['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(newStatus);
 
-        await db.ref(`/orders/${orderId}`).update(updates);
-
-        if (newStatus === "Delivered") {
-            if (orderData && orderData.phone) {
-                const customerPhone = orderData.phone;
-                const userData = (await db.ref(`/users/${customerPhone}`).once('value')).val();
-
-                if (userData && userData.referredBy && userData.referralStatus === "pending") {
-                    const referrerPhone = userData.referredBy;
-                    const referrerData = (await db.ref(`/users/${referrerPhone}`).once('value')).val();
-
-                    if (referrerData) {
-                        let currentFreeDel = parseInt(referrerData.freeDeliveries) || 0;
-                        let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); 
-
-                        await db.ref(`/users/${referrerPhone}`).update({ freeDeliveries: currentFreeDel + 3, rewardExpiry: newExpiry });
-                        await db.ref(`/users/${customerPhone}`).update({ referralStatus: "completed" });
-                    }
+        // 🟢 FIX D: Stock Restoration
+        if (wasActive && isNowCancelled && orderData.items) {
+            for (let item of orderData.items) {
+                if (item.id) {
+                    await db.ref(`/products/${item.id}`).transaction((product) => {
+                        if (product) product.stock = (parseFloat(product.stock) || 0) + parseFloat(item.qty);
+                        return product;
+                    });
                 }
             }
         }
 
+        // 🟢 FIX E: Atomic Referral Reward (Double Credit Blocked)
+        if (newStatus === "Delivered" && orderData.status !== "Delivered" && orderData.phone) {
+            const userRef = db.ref(`/users/${orderData.phone}`);
+            const { committed, snapshot } = await userRef.transaction((user) => {
+                // Sirf tabhi aage badho jab status strictly 'pending' ho
+                if (user && user.referredBy && user.referralStatus === "pending") {
+                    user.referralStatus = "completed_processing"; // Lock kar do
+                    return user;
+                }
+                return undefined; // Agar kisi aur ne process kar diya hai, toh cancel karo
+            });
+
+            if (committed && snapshot.val()) {
+                const userData = snapshot.val();
+                await db.ref(`/users/${userData.referredBy}`).transaction((referrer) => {
+                    if (referrer) {
+                        referrer.freeDeliveries = (parseInt(referrer.freeDeliveries) || 0) + 3;
+                        referrer.rewardExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
+                    }
+                    return referrer;
+                });
+                await userRef.update({ referralStatus: "completed" });
+            }
+        }
+
+        const updates = { status: newStatus };
+        if (newStatus === 'Confirmed') updates.assignedRider = riderEmail;
+
+        await orderRef.update(updates);
         res.json({ success: true, message: "Status Updated Successfully" });
-    } catch (error) { 
-        res.json({ success: false, message: "Update fail ho gaya." }); 
-    }
+
+    } catch (error) { res.json({ success: false, message: "Update fail ho gaya." }); }
 });
 
 // ==========================================
-// 7. 🎁 ADMIN: ORDER DELIVER HONE PAR REWARD
+// 7. 🎁 ADMIN: ORDER STATUS UPDATE (Secure Stock & Reward)
 // ==========================================
 app.post('/api/order/update-status', async (req, res) => {
     try {
@@ -453,29 +468,57 @@ app.post('/api/order/update-status', async (req, res) => {
         const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
         if (decodedAdmin.email !== 'neerajkumar00999666@gmail.com') throw new Error("Aapko Admin access nahi hai!");
 
-        await db.ref(`/orders/${orderId}`).update({ status: newStatus });
+        const orderRef = db.ref(`/orders/${orderId}`);
+        const orderSnap = await orderRef.once('value');
+        const orderData = orderSnap.val();
+        if (!orderData) return res.json({ success: false, message: "Order not found" });
 
-        if (newStatus === "Delivered") {
-            const orderData = (await db.ref(`/orders/${orderId}`).once('value')).val();
-            if (orderData && orderData.phone) {
-                const customerPhone = orderData.phone;
-                const userData = (await db.ref(`/users/${customerPhone}`).once('value')).val();
+        const wasActive = !['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(orderData.status);
+        const isNowCancelled = ['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(newStatus);
 
-                if (userData && userData.referredBy && userData.referralStatus === "pending") {
-                    const referrerPhone = userData.referredBy;
-                    const referrerData = (await db.ref(`/users/${referrerPhone}`).once('value')).val();
-
-                    if (referrerData) {
-                        let currentFreeDel = parseInt(referrerData.freeDeliveries) || 0;
-                        let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); 
-
-                        await db.ref(`/users/${referrerPhone}`).update({ freeDeliveries: currentFreeDel + 3, rewardExpiry: newExpiry });
-                        await db.ref(`/users/${customerPhone}`).update({ referralStatus: "completed" });
-                    }
+        // 🟢 FIX D: Stock Restoration
+        if (wasActive && isNowCancelled && orderData.items) {
+            for (let item of orderData.items) {
+                if (item.id) {
+                    await db.ref(`/products/${item.id}`).transaction((product) => {
+                        if (product) product.stock = (parseFloat(product.stock) || 0) + parseFloat(item.qty);
+                        return product;
+                    });
                 }
             }
         }
-        res.json({ success: true, message: "Status updated" });
+
+        // 🟢 FIX E: Atomic Referral Reward
+        if (newStatus === "Delivered" && orderData.status !== "Delivered" && orderData.phone) {
+            const userRef = db.ref(`/users/${orderData.phone}`);
+            const { committed, snapshot } = await userRef.transaction((user) => {
+                if (user && user.referredBy && user.referralStatus === "pending") {
+                    user.referralStatus = "completed_processing";
+                    return user;
+                }
+                return undefined;
+            });
+
+            if (committed && snapshot.val()) {
+                const userData = snapshot.val();
+                await db.ref(`/users/${userData.referredBy}`).transaction((referrer) => {
+                    if (referrer) {
+                        referrer.freeDeliveries = (parseInt(referrer.freeDeliveries) || 0) + 3;
+                        referrer.rewardExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
+                    }
+                    return referrer;
+                });
+                await userRef.update({ referralStatus: "completed" });
+            }
+        }
+
+        // Return aane par cancelCount badhao taaki customer ki rating check ho sake
+        if (newStatus === "Returned/Rejected" && orderData.phone) {
+            await db.ref(`/users/${orderData.phone}/returnCount`).transaction(c => (c || 0) + 1);
+        }
+
+        await orderRef.update({ status: newStatus });
+        res.json({ success: true, message: "Status updated securely" });
 
     } catch (error) { res.json({ success: false, message: error.message }); }
 });
