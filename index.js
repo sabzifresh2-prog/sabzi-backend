@@ -821,6 +821,9 @@ app.post('/api/admin/create-rider', async (req, res) => {
 // 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
 // ==========================================
 app.post('/api/admin/send-notification', async (req, res) => {
+  // 👉 NAYI LINE: Jaise hi request aayegi, server logs mein yeh print karega
+  console.log(`🔔 Notification Request Aayi! Title: ${req.body.title}`); 
+
   try {
     const { title, message, adminToken } = req.body;
     
@@ -832,14 +835,14 @@ app.post('/api/admin/send-notification', async (req, res) => {
 
     // 2. Check if Keys exist
     if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_KEY) {
-      console.error("🚨 ERROR: OneSignal Keys Render mein nahi hain!");
-      return res.json({ success: false, message: "OneSignal Keys Missing hain Render mein!" });
+      console.error("🚨 ERROR: OneSignal Keys Render mein missing hain!");
+      return res.json({ success: false, message: "OneSignal Keys Missing!" });
     }
 
     // 3. Payload with New Rule ("Total Subscriptions")
     const payload = { 
       app_id: ONESIGNAL_APP_ID, 
-      included_segments: ["Total Subscriptions"], // Naya aur safe tareeka
+      included_segments: ["Total Subscriptions"], 
       headings: { en: title }, 
       contents: { en: message } 
     };
@@ -857,7 +860,7 @@ app.post('/api/admin/send-notification', async (req, res) => {
 
     const data = await response.json();
     
-    // 5. Agar OneSignal ne koi error diya toh turant pakdo
+    // 5. Agar OneSignal ne error diya toh laal rang mein dikhayega
     if(data.errors) {
         console.error("🚨 OneSignal Error:", data.errors);
         return res.json({ success: false, message: "OneSignal Error: " + JSON.stringify(data.errors) });
@@ -869,8 +872,6 @@ app.post('/api/admin/send-notification', async (req, res) => {
     res.json({ success: false, message: "Server error, Render Logs check karein." }); 
   }
 });
-
-
 // ==========================================
 // 12. 🛵 RIDER DASHBOARD: Pending Orders
 // ==========================================
