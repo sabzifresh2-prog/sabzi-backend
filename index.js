@@ -1,22 +1,19 @@
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
 
 // ==========================================
-// 🛡️ FIX #7: CORS ab sirf whitelist domains ke liye khula hai
-// (pehle app.use(cors()) sabke liye khula tha)
+// 🛡️ CORS — sirf whitelist domains ke liye khula
+// (pehle app.use(cors()) sabke liye khula tha — FIX)
 // ==========================================
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
   .split(',').map(s => s.trim()).filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Server-to-server / curl requests (no origin) ko allow rakha hai;
-    // agar chahen to isay bhi block kar sakte hain.
     if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
@@ -30,15 +27,15 @@ app.use(express.json());
 // ==========================================
 const OTP_EXPIRE_MIN = 10;
 const OTP_MAX_SEND_PER_DAY = 4;
-const OTP_MAX_VERIFY_ATTEMPTS = 5;   // 🛡️ FIX #1 ke liye naya
+const OTP_MAX_VERIFY_ATTEMPTS = 5;
 const OTP_BLOCK_HOURS = 24;
 const APP_NAME = "Sabzi Fresh";
 
-const SMTP_HOST = (process.env.SMTP_HOST || "").trim();
-const SMTP_PORT = parseInt(process.env.SMTP_PORT || "465");
-const SMTP_USER = (process.env.SMTP_USER || "").trim();
-const SMTP_PASS = (process.env.SMTP_PASS || "").trim();
-const SMTP_FROM = (process.env.SMTP_FROM || SMTP_USER).trim();
+// 📧 Mail Relay (Google Apps Script) — Render free tier SMTP ports block
+// karta hai, isliye email HTTPS ke through ek GAS "relay" se bhejte hain.
+// GAS sirf mail bhejta hai — koi OTP logic wahan nahi hai.
+const MAIL_RELAY_URL = (process.env.MAIL_RELAY_URL || "").trim();
+const MAIL_RELAY_SECRET = (process.env.MAIL_RELAY_SECRET || "").trim();
 
 const TELEGRAM_SCRIPT_URL = (process.env.TELEGRAM_SCRIPT_URL || "").trim();
 
@@ -63,46 +60,28 @@ try {
     console.warn("🚨 WARNING: FIREBASE_SERVICE_ACCOUNT_JSON variable missing hai!");
   }
 } catch (error) {
-  console.error("🚨 ERROR: JSON Parse fail ho gaya.", error);
+  console.error("🚨 ERROR: JSON Parse fail ho gaya. Variable theek se load nahi hua.", error);
 }
 
 const db = admin.database();
-
-// ==========================================
-// 📧 MAIL TRANSPORTER (OTP email bhejne ke liye)
-// ==========================================
-let mailTransporter = null;
-if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
-  mailTransporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT === 465,
-    auth: { user: SMTP_USER, pass: SMTP_PASS }
-  });
-} else {
-  console.warn("🚨 WARNING: SMTP env vars missing — OTP email nahi ja payegi!");
-}
 
 app.get('/', (req, res) => {
   res.json({ status: 'OK', message: 'Sabzi Fresh API — Secure Backend Live Hai!' });
 });
 
 // ==========================================
-// 🛡️ FIX #6: Rate limiters
+// 🛡️ RATE LIMITERS
 // ==========================================
-// OTP send: har IP se 15 minute mein max 6 request
 const otpSendLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 6,
   message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
 });
-// OTP verify: har IP se 15 minute mein max 20 request (brute-force slow-down)
 const otpVerifyLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: { success: false, message: "Bahut zyada attempts. Thodi der baad try karein." }
 });
-// General order-related endpoints ke liye halka limiter
 const orderLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 30,
@@ -110,10 +89,7 @@ const orderLimiter = rateLimit({
 });
 
 // ==========================================
-// 🔑 OTP DATA HELPERS
-// (Ye data 'otp_data/' node mein rehta hai — Firebase rules mein ye node
-//  sirf admin ko hi client-side dikhta/likha ja sakta hai, lekin Admin SDK
-//  rules ko bypass karta hai isliye backend yahan safely padh-likh sakta hai)
+// 🔑 OTP DATA HELPERS (Firebase 'otp_data/' node mein store hota hai)
 // ==========================================
 function emailToKey(email) {
   // Firebase key mein '.', '#', '$', '/', '[', ']' allowed nahi hain
@@ -147,8 +123,14 @@ function todayIST() {
   return new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
 }
 
+// ==========================================
+// 📧 MAIL — GAS Relay ke through bhejte hain
+// ==========================================
 async function sendOtpEmail(email, otp) {
-  if (!mailTransporter) return false;
+  if (!MAIL_RELAY_URL || !MAIL_RELAY_SECRET) {
+    console.warn("🚨 MAIL_RELAY_URL/SECRET missing — email nahi ja sakti!");
+    return false;
+  }
   try {
     const otpDigitsHtml = otp.split("").map(d =>
       `<td style="padding:0 5px;"><div style="width:44px;height:52px;background:#f0faf0;border:2px solid #2e7d32;border-radius:10px;font-size:26px;font-weight:800;color:#1b5e20;text-align:center;line-height:52px;font-family:monospace;">${d}</div></td>`
@@ -170,16 +152,22 @@ async function sendOtpEmail(email, otp) {
         </td></tr></table>
       </div>`;
 
-    await mailTransporter.sendMail({
-      from: `"${APP_NAME}" <${SMTP_FROM}>`,
-      to: email,
-      subject: `🥦 ${APP_NAME} - Aapka Login OTP`,
-      text: `Aapka OTP: ${otp} (${OTP_EXPIRE_MIN} min valid hai)`,
-      html: htmlBody
+    const resp = await fetch(MAIL_RELAY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret: MAIL_RELAY_SECRET,
+        to: email,
+        subject: `🥦 ${APP_NAME} - Aapka Login OTP`,
+        text: `Aapka OTP: ${otp} (${OTP_EXPIRE_MIN} min valid hai)`,
+        html: htmlBody
+      })
     });
-    return true;
+
+    const data = await resp.json();
+    return data.success === true;
   } catch (err) {
-    console.error("Mail send error:", err);
+    console.error("Mail relay call error:", err);
     return false;
   }
 }
@@ -220,7 +208,7 @@ app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
     rec.otp = otp;
     rec.otpTime = now;
     rec.sendCount += 1;
-    rec.verifyAttempts = 0; // 🛡️ naya OTP aaya to verify-counter reset
+    rec.verifyAttempts = 0;
     await setOtpRecord(cleanEmail, rec);
 
     const sent = await sendOtpEmail(cleanEmail, otp);
@@ -236,9 +224,7 @@ app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 2. ✅ OTP VERIFY + VIP PASS (Custom Token) banana
-// 🛡️ FIX #1: verify_otp par bhi ab attempt-limit + lockout hai
-// (pehle sirf send par tha, verify pe brute-force khula tha)
+// 2. ✅ OTP VERIFY + VIP PASS (Custom Token)
 // ==========================================
 app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
   try {
@@ -264,7 +250,6 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
     }
 
     if (rec.otp !== String(code).trim()) {
-      // 🛡️ FIX #1: galat guess par counter badhao, limit cross hone par block karo
       rec.verifyAttempts = (rec.verifyAttempts || 0) + 1;
       if (rec.verifyAttempts >= OTP_MAX_VERIFY_ATTEMPTS) {
         rec.otp = "";
@@ -276,18 +261,12 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
       return res.json({ success: false, message: `Galat OTP! (${OTP_MAX_VERIFY_ATTEMPTS - rec.verifyAttempts} attempts baaki)` });
     }
 
-    // ✅ Sahi OTP — sab reset karo
+    // ✅ Sahi OTP
     rec.otp = ""; rec.otpTime = 0; rec.sendCount = 0; rec.verifyAttempts = 0;
     await setOtpRecord(cleanEmail, rec);
 
-    // ==========================================
-    // 🎫 VIP PASS — Firebase Admin SDK ka built-in
-    // createCustomToken use kiya hai. Manual RSA-JWT
-    // signing (jo GAS script mein tha) yahan zaroori
-    // nahi — Admin SDK apne aap secure signing karta
-    // hai apne service-account credentials se.
-    // ==========================================
-    const uid = emailToKey(cleanEmail); // stable uid, email-based
+    // 🎫 VIP PASS — Firebase Admin SDK ka built-in secure custom token
+    const uid = emailToKey(cleanEmail);
     const vipToken = await admin.auth().createCustomToken(uid, { email: cleanEmail });
 
     res.json({ success: true, message: "Email verify ho gaya! ✔️", token: vipToken });
@@ -298,9 +277,7 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 3. 🛡️ SECURE REGISTRATION
-// (Purana logic same — sirf verifyIdToken.email comparison
-//  ab custom-token claim se aata hai, jo humne khud set kiya)
+// 3. 🛡️ SECURE REGISTRATION (phone verification NAHI hai — sirf email verified)
 // ==========================================
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -316,11 +293,6 @@ app.post('/api/auth/register', async (req, res) => {
     if ((decodedToken.email || "").toLowerCase() !== cleanEmail) {
       return res.json({ success: false, message: "Security Alert: Token aur Email match nahi ho rahe!" });
     }
-
-    // ℹ️ NOTE: Phone number ka koi SMS/OTP verification nahi hai (jaisa
-    // ki decide kiya gaya) — isliye phone sirf "contact info" hai,
-    // verified identity nahi. Delivery ke time WhatsApp/call se confirm
-    // karna recommended hai.
 
     let referrerPhone = null;
     if (referCode) {
@@ -367,8 +339,6 @@ app.post('/api/auth/register', async (req, res) => {
 
 // ==========================================
 // 🔧 HELPER: token verify karke email nikalna
-// (isko reuse karke order/place aur order/cancel
-//  dono mein FIX #2 aur FIX #3 lagaye hain)
 // ==========================================
 async function verifyAndGetEmail(userToken) {
   const decoded = await admin.auth().verifyIdToken(userToken);
@@ -376,7 +346,7 @@ async function verifyAndGetEmail(userToken) {
 }
 
 // ==========================================
-// 4. 🛒 SECURE BILL CALCULATOR (same as before)
+// 4. 🛒 SECURE BILL CALCULATOR
 // ==========================================
 app.post('/api/order/calculate', async (req, res) => {
   try {
@@ -420,8 +390,7 @@ app.post('/api/order/calculate', async (req, res) => {
 
 // ==========================================
 // 5. 🚀 SECURE ORDER MANAGER
-// 🛡️ FIX #2: ab token ka email 'users/{phone}/email' se match hona
-// zaroori hai — koi bhi user kisi aur ke phone se order nahi rakh sakta
+// 🛡️ Token ka email 'users/{phone}/email' se match hona zaroori hai
 // ==========================================
 app.post('/api/order/place', orderLimiter, async (req, res) => {
   try {
@@ -431,7 +400,6 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
       return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
     }
 
-    // 🛡️ FIX #2: token verify karke uska email nikala aur AAGE USE kiya
     const tokenEmail = await verifyAndGetEmail(userToken);
 
     const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
@@ -439,8 +407,6 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
     if (!userData) {
       return res.json({ success: false, message: "User record nahi mila." });
     }
-    // 🛡️ FIX #2: ownership check — token ka email aur is phone ka registered
-    // email match hona hi chahiye, warna order place nahi hoga
     if ((userData.email || "").toLowerCase() !== tokenEmail) {
       return res.json({ success: false, message: "Security Alert: Aap sirf apne khud ke account se order kar sakte hain." });
     }
@@ -577,8 +543,7 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 6. 🛵 RIDER STATUS UPDATE (same logic, status-check ab exact whitelist se)
-// 🛡️ FIX #14: '.includes()' substring match hataya, ab exact set check hai
+// 6. 🛵 RIDER: STATUS UPDATE
 // ==========================================
 const ALLOWED_STATUSES = [
   'Packing in Progress ⏳', 'Confirmed', 'Out for Delivery',
@@ -646,7 +611,7 @@ app.post('/api/order/rider-update', async (req, res) => {
 });
 
 // ==========================================
-// 7. 🎁 ADMIN: ORDER STATUS UPDATE (same, exact-status whitelist)
+// 7. 🎁 ADMIN: ORDER STATUS UPDATE
 // ==========================================
 app.post('/api/order/update-status', async (req, res) => {
   try {
@@ -705,7 +670,7 @@ app.post('/api/order/update-status', async (req, res) => {
 });
 
 // ==========================================
-// 8. 🎁 ADMIN: MANUAL REWARD (same)
+// 8. 🎁 ADMIN: MANUAL REWARD DENA
 // ==========================================
 app.post('/api/admin/give-reward', async (req, res) => {
   try {
@@ -733,21 +698,18 @@ app.post('/api/admin/give-reward', async (req, res) => {
 
 // ==========================================
 // 9. 🚫 SECURE ORDER CANCEL
-// 🛡️ FIX #3: ab decoded token ka email order.email se match kiya jata hai —
-// pehle ye ownership-check bilkul missing tha (IDOR bug)
+// 🛡️ Token ka email order.email se match kiya jata hai
 // ==========================================
 app.post('/api/order/cancel', orderLimiter, async (req, res) => {
   try {
     const { orderId, cancelReason, userToken } = req.body;
     if (!orderId || !userToken) return res.json({ success: false, message: "Missing info" });
 
-    // 🛡️ FIX #3: result ab use ho raha hai
     const tokenEmail = await verifyAndGetEmail(userToken);
 
     const orderData = (await db.ref(`/orders/${orderId}`).once('value')).val();
     if (!orderData) return res.json({ success: false, message: "Order nahi mila." });
 
-    // 🛡️ FIX #3: ownership check — sirf apna order hi cancel ho sakta hai
     if ((orderData.email || "").toLowerCase() !== tokenEmail) {
       return res.json({ success: false, message: "Security Alert: Aap sirf apna order cancel kar sakte hain." });
     }
@@ -786,7 +748,7 @@ app.post('/api/order/cancel', orderLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 10. 👨‍💼 ADMIN: CREATE RIDER (same)
+// 10. 👨‍💼 ADMIN: CREATE RIDER ACCOUNT
 // ==========================================
 app.post('/api/admin/create-rider', async (req, res) => {
   try {
@@ -802,7 +764,7 @@ app.post('/api/admin/create-rider', async (req, res) => {
 });
 
 // ==========================================
-// 11. 🔔 ADMIN: BROADCAST NOTIFICATION (same)
+// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
 // ==========================================
 app.post('/api/admin/send-notification', async (req, res) => {
   try {
@@ -822,7 +784,7 @@ app.post('/api/admin/send-notification', async (req, res) => {
 });
 
 // ==========================================
-// 12. 🛵 RIDER DASHBOARD: Pending Orders (same)
+// 12. 🛵 RIDER DASHBOARD: Pending Orders
 // ==========================================
 app.post('/api/rider/my-orders', async (req, res) => {
   try {
