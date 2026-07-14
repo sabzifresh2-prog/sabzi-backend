@@ -823,19 +823,53 @@ app.post('/api/admin/create-rider', async (req, res) => {
 app.post('/api/admin/send-notification', async (req, res) => {
   try {
     const { title, message, adminToken } = req.body;
+    
+    // 1. Admin Security Check
     const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
-    if ((decodedAdmin.email || "").toLowerCase() !== ADMIN_EMAIL) return res.json({ success: false, message: "Access denied" });
+    if ((decodedAdmin.email || "").toLowerCase() !== ADMIN_EMAIL) {
+      return res.json({ success: false, message: "Aapko Admin access nahi hai!" });
+    }
 
-    if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_KEY) return res.json({ success: false, message: "OneSignal Keys Missing" });
+    // 2. Check if Keys exist
+    if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_KEY) {
+      console.error("🚨 ERROR: OneSignal Keys Render mein nahi hain!");
+      return res.json({ success: false, message: "OneSignal Keys Missing hain Render mein!" });
+    }
 
-    const payload = { app_id: ONESIGNAL_APP_ID, included_segments: ["All"], headings: { en: title }, contents: { en: message } };
+    // 3. Payload with New Rule ("Total Subscriptions")
+    const payload = { 
+      app_id: ONESIGNAL_APP_ID, 
+      included_segments: ["Total Subscriptions"], // Naya aur safe tareeka
+      headings: { en: title }, 
+      contents: { en: message } 
+    };
+
+    // 4. Bhejne ka order
     const response = await fetch("https://onesignal.com/api/v1/notifications", {
-      method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` }, body: JSON.stringify(payload)
+      method: "POST", 
+      headers: { 
+        "Content-Type": "application/json", 
+        "Accept": "application/json",
+        "Authorization": `Basic ${ONESIGNAL_REST_KEY}` 
+      }, 
+      body: JSON.stringify(payload)
     });
+
     const data = await response.json();
-    res.json({ success: true, response: data });
-  } catch (error) { res.json({ success: false, message: "Notification send fail." }); }
+    
+    // 5. Agar OneSignal ne koi error diya toh turant pakdo
+    if(data.errors) {
+        console.error("🚨 OneSignal Error:", data.errors);
+        return res.json({ success: false, message: "OneSignal Error: " + JSON.stringify(data.errors) });
+    }
+
+    res.json({ success: true, message: "Notification sabko bhej di gayi hai! 🚀", response: data });
+  } catch (error) { 
+    console.error("🚨 Notification Catch Error:", error);
+    res.json({ success: false, message: "Server error, Render Logs check karein." }); 
+  }
 });
+
 
 // ==========================================
 // 12. 🛵 RIDER DASHBOARD: Pending Orders
