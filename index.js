@@ -4,6 +4,7 @@ const admin = require('firebase-admin');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
+app.set('trust proxy', 1);
 
 // ==========================================
 // 🛡️ CORS — sirf whitelist domains ke liye khula
