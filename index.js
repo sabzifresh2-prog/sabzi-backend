@@ -846,5 +846,5 @@ app.post('/api/rider/my-orders', async (req, res) => {
   } catch (error) { res.json({ success: false, message: "Orders load nahi hue." }); }
 });
 
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 10000; j
 app.listen(PORT, () => { console.log(`Server port ${PORT} par chal raha hai`); });
