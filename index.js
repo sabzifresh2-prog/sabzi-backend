@@ -125,7 +125,8 @@ function todayIST() {
 }
 
 // ==========================================
-// 📧 MAIL — GAS Relay ke through bhejte hain
+// ==========================================
+// 📧 MAIL — PREMIUM OTP TEMPLATE (GAS Relay ke through)
 // ==========================================
 async function sendOtpEmail(email, otp) {
   if (!MAIL_RELAY_URL || !MAIL_RELAY_SECRET) {
@@ -133,26 +134,78 @@ async function sendOtpEmail(email, otp) {
     return false;
   }
   try {
+    // OTP ke 6 dabbe (boxes) banane ka code
     const otpDigitsHtml = otp.split("").map(d =>
-      `<td style="padding:0 5px;"><div style="width:44px;height:52px;background:#f0faf0;border:2px solid #2e7d32;border-radius:10px;font-size:26px;font-weight:800;color:#1b5e20;text-align:center;line-height:52px;font-family:monospace;">${d}</div></td>`
+      `<td style="padding:0 5px;"><div style="width:40px;height:48px;background:#f0faf0;border:2px solid #2e7d32;border-radius:8px;font-size:24px;font-weight:bold;color:#1b5e20;text-align:center;line-height:48px;font-family:monospace;">${d}</div></td>`
     ).join("");
 
+    // Wahi Purana aur Premium HTML Design
     const htmlBody = `
-      <div style="background:#f4f7f4;padding:30px 0;font-family:Arial,sans-serif;">
+      <div style="background-color:#f4f7f4; padding:20px 0; font-family:Arial, sans-serif; color:#333;">
         <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
-          <table width="480" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;overflow:hidden;">
-            <tr><td style="background:#1b5e20;padding:24px;text-align:center;color:#fff;">
-              <h2 style="margin:0;">🥦 ${APP_NAME}</h2>
-            </td></tr>
-            <tr><td style="padding:28px;text-align:center;">
-              <p style="color:#555;">Aapka OTP:</p>
-              <table style="margin:0 auto;"><tr>${otpDigitsHtml}</tr></table>
-              <p style="color:#888;font-size:13px;margin-top:16px;">⏰ Ye OTP sirf ${OTP_EXPIRE_MIN} minute tak valid hai. Kisi se share na karein.</p>
-            </td></tr>
+          <table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff; border-radius:12px; overflow:hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+            
+            <!-- 🥦 Header Section -->
+            <tr>
+              <td style="background-color:#2e7d32; padding:30px; text-align:center; color:#ffffff;">
+                <div style="font-size:40px; margin-bottom:10px;">🥦</div>
+                <h1 style="margin:0; font-size:24px; font-weight:bold; letter-spacing:1px;">${APP_NAME}</h1>
+                <p style="margin:5px 0 0 0; font-size:14px; opacity:0.9;">Taaza Sabzi, Seedha Aapke Ghar</p>
+              </td>
+            </tr>
+            
+            <!-- ✉️ Body Section -->
+            <tr>
+              <td style="padding:30px;">
+                <h2 style="color:#2e7d32; margin-top:0; font-size:20px;">Namaste! 👋</h2>
+                <p style="font-size:15px; color:#555; line-height:1.5; margin-bottom:25px;">
+                  Aapne <b>${APP_NAME}</b> mein login karne ki koshish ki hai. Neeche diya gaya OTP use karein:
+                </p>
+                
+                <!-- 🔢 OTP Box -->
+                <div style="background-color:#f9f9f9; border:1px solid #e0e0e0; border-radius:10px; padding:20px; text-align:center; margin-bottom:20px;">
+                  <p style="font-size:12px; color:#888; font-weight:bold; letter-spacing:1px; margin-top:0; text-transform:uppercase;">Aapka One-Time Password</p>
+                  <table style="margin:0 auto;"><tr>${otpDigitsHtml}</tr></table>
+                  <p style="font-size:13px; color:#d32f2f; margin:15px 0 0 0;">
+                    ⏰ Ye OTP sirf <b>${OTP_EXPIRE_MIN} minute</b> tak valid hai.
+                  </p>
+                </div>
+                
+                <!-- 🔒 Security Alert Box -->
+                <div style="background-color:#fff8e1; border-left:4px solid #ffb300; padding:15px; border-radius:4px; margin-bottom:25px;">
+                  <p style="margin:0; font-size:13px; color:#665c00; line-height:1.5;">
+                    🔒 <b>Security Alert:</b> Ye OTP <b>kisi ke saath share na karein</b> - Sabzi Fresh ka koi bhi employee aapse OTP kabhi nahi maangta.
+                  </p>
+                </div>
+                
+                <!-- 📝 Instructions -->
+                <h3 style="font-size:15px; color:#333; margin-bottom:15px;">Kaise use karein:</h3>
+                <table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px; color:#555; line-height:1.6;">
+                  <tr>
+                    <td width="25" valign="top"><div style="background:#2e7d32; color:#fff; width:18px; height:18px; border-radius:50%; text-align:center; line-height:18px; font-size:12px; font-weight:bold;">1</div></td>
+                    <td style="padding-bottom:10px;">Apni Sabzi Fresh app par wapas jaayein</td>
+                  </tr>
+                  <tr>
+                    <td width="25" valign="top"><div style="background:#2e7d32; color:#fff; width:18px; height:18px; border-radius:50%; text-align:center; line-height:18px; font-size:12px; font-weight:bold;">2</div></td>
+                    <td style="padding-bottom:10px;">Upar diya gaya OTP type karein</td>
+                  </tr>
+                  <tr>
+                    <td width="25" valign="top"><div style="background:#2e7d32; color:#fff; width:18px; height:18px; border-radius:50%; text-align:center; line-height:18px; font-size:12px; font-weight:bold;">3</div></td>
+                    <td>'Verify' button par click karein</td>
+                  </tr>
+                </table>
+                
+                <!-- 🛑 Footer -->
+                <p style="font-size:12px; color:#999; margin-top:30px; line-height:1.5; border-top:1px solid #eee; padding-top:20px;">
+                  Agar aapne login ki koshish <b>nahi</b> ki, toh is email ko ignore karein. Koi action lene ki zaroorat nahi hai.
+                </p>
+              </td>
+            </tr>
           </table>
         </td></tr></table>
       </div>`;
 
+    // Google Script (Dakiye) ko message bhejna
     const resp = await fetch(MAIL_RELAY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
