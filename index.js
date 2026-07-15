@@ -8,7 +8,6 @@ app.set('trust proxy', 1);
 
 // ==========================================
 // 🛡️ CORS — sirf whitelist domains ke liye khula
-// (pehle app.use(cors()) sabke liye khula tha — FIX)
 // ==========================================
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -32,9 +31,6 @@ const OTP_MAX_VERIFY_ATTEMPTS = 5;
 const OTP_BLOCK_HOURS = 24;
 const APP_NAME = "Sabzi Fresh";
 
-// 📧 Mail Relay (Google Apps Script) — Render free tier SMTP ports block
-// karta hai, isliye email HTTPS ke through ek GAS "relay" se bhejte hain.
-// GAS sirf mail bhejta hai — koi OTP logic wahan nahi hai.
 const MAIL_RELAY_URL = (process.env.MAIL_RELAY_URL || "").trim();
 const MAIL_RELAY_SECRET = (process.env.MAIL_RELAY_SECRET || "").trim();
 
@@ -74,57 +70,42 @@ app.get('/', (req, res) => {
 // 🛡️ RATE LIMITERS
 // ==========================================
 const otpSendLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 6,
+  windowMs: 15 * 60 * 1000, max: 6,
   message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
 });
 const otpVerifyLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
+  windowMs: 15 * 60 * 1000, max: 20,
   message: { success: false, message: "Bahut zyada attempts. Thodi der baad try karein." }
 });
 const orderLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 30,
+  windowMs: 10 * 60 * 1000, max: 30,
+  message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
+});
+// 🛡️ NAYA FIX: register aur calculate anonymous endpoints hain, inhe bhi rate-limit chahiye
+const generalLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 40,
   message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
 });
 
 // ==========================================
-// 🔑 OTP DATA HELPERS (Firebase 'otp_data/' node mein store hota hai)
+// 🔑 OTP DATA HELPERS
 // ==========================================
 function emailToKey(email) {
-  // Firebase key mein '.', '#', '$', '/', '[', ']' allowed nahi hain
   return Buffer.from(email).toString('hex');
 }
-
 async function getOtpRecord(email) {
   const key = emailToKey(email);
   const snap = await db.ref(`otp_data/${key}`).once('value');
-  return snap.val() || {
-    sendCount: 0,
-    verifyAttempts: 0,
-    date: "",
-    blockedUntil: 0,
-    otp: "",
-    otpTime: 0
-  };
+  return snap.val() || { sendCount: 0, verifyAttempts: 0, date: "", blockedUntil: 0, otp: "", otpTime: 0 };
 }
 async function setOtpRecord(email, data) {
   const key = emailToKey(email);
   await db.ref(`otp_data/${key}`).set(data);
 }
+function generateOTP() { return Math.floor(100000 + Math.random() * 900000).toString(); }
+function isValidEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
+function todayIST() { return new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }); }
 
-function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
-function isValidEmail(e) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-}
-function todayIST() {
-  return new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" });
-}
-
-// ==========================================
 // ==========================================
 // 📧 MAIL — PREMIUM OTP TEMPLATE (GAS Relay ke through)
 // ==========================================
@@ -134,18 +115,14 @@ async function sendOtpEmail(email, otp) {
     return false;
   }
   try {
-    // OTP ke 6 dabbe (boxes) banane ka code
     const otpDigitsHtml = otp.split("").map(d =>
       `<td style="padding:0 5px;"><div style="width:40px;height:48px;background:#f0faf0;border:2px solid #2e7d32;border-radius:8px;font-size:24px;font-weight:bold;color:#1b5e20;text-align:center;line-height:48px;font-family:monospace;">${d}</div></td>`
     ).join("");
 
-    // Wahi Purana aur Premium HTML Design
     const htmlBody = `
       <div style="background-color:#f4f7f4; padding:20px 0; font-family:Arial, sans-serif; color:#333;">
         <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
           <table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff; border-radius:12px; overflow:hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-            
-            <!-- 🥦 Header Section -->
             <tr>
               <td style="background-color:#2e7d32; padding:30px; text-align:center; color:#ffffff;">
                 <div style="font-size:40px; margin-bottom:10px;">🥦</div>
@@ -153,51 +130,22 @@ async function sendOtpEmail(email, otp) {
                 <p style="margin:5px 0 0 0; font-size:14px; opacity:0.9;">Taaza Sabzi, Seedha Aapke Ghar</p>
               </td>
             </tr>
-            
-            <!-- ✉️ Body Section -->
             <tr>
               <td style="padding:30px;">
                 <h2 style="color:#2e7d32; margin-top:0; font-size:20px;">Namaste! 👋</h2>
                 <p style="font-size:15px; color:#555; line-height:1.5; margin-bottom:25px;">
                   Aapne <b>${APP_NAME}</b> mein login karne ki koshish ki hai. Neeche diya gaya OTP use karein:
                 </p>
-                
-                <!-- 🔢 OTP Box -->
                 <div style="background-color:#f9f9f9; border:1px solid #e0e0e0; border-radius:10px; padding:20px; text-align:center; margin-bottom:20px;">
                   <p style="font-size:12px; color:#888; font-weight:bold; letter-spacing:1px; margin-top:0; text-transform:uppercase;">Aapka One-Time Password</p>
                   <table style="margin:0 auto;"><tr>${otpDigitsHtml}</tr></table>
-                  <p style="font-size:13px; color:#d32f2f; margin:15px 0 0 0;">
-                    ⏰ Ye OTP sirf <b>${OTP_EXPIRE_MIN} minute</b> tak valid hai.
-                  </p>
+                  <p style="font-size:13px; color:#d32f2f; margin:15px 0 0 0;">⏰ Ye OTP sirf <b>${OTP_EXPIRE_MIN} minute</b> tak valid hai.</p>
                 </div>
-                
-                <!-- 🔒 Security Alert Box -->
                 <div style="background-color:#fff8e1; border-left:4px solid #ffb300; padding:15px; border-radius:4px; margin-bottom:25px;">
-                  <p style="margin:0; font-size:13px; color:#665c00; line-height:1.5;">
-                    🔒 <b>Security Alert:</b> Ye OTP <b>kisi ke saath share na karein</b> - Sabzi Fresh ka koi bhi employee aapse OTP kabhi nahi maangta.
-                  </p>
+                  <p style="margin:0; font-size:13px; color:#665c00; line-height:1.5;">🔒 <b>Security Alert:</b> Ye OTP <b>kisi ke saath share na karein</b>.</p>
                 </div>
-                
-                <!-- 📝 Instructions -->
-                <h3 style="font-size:15px; color:#333; margin-bottom:15px;">Kaise use karein:</h3>
-                <table width="100%" cellpadding="0" cellspacing="0" style="font-size:14px; color:#555; line-height:1.6;">
-                  <tr>
-                    <td width="25" valign="top"><div style="background:#2e7d32; color:#fff; width:18px; height:18px; border-radius:50%; text-align:center; line-height:18px; font-size:12px; font-weight:bold;">1</div></td>
-                    <td style="padding-bottom:10px;">Apni Sabzi Fresh app par wapas jaayein</td>
-                  </tr>
-                  <tr>
-                    <td width="25" valign="top"><div style="background:#2e7d32; color:#fff; width:18px; height:18px; border-radius:50%; text-align:center; line-height:18px; font-size:12px; font-weight:bold;">2</div></td>
-                    <td style="padding-bottom:10px;">Upar diya gaya OTP type karein</td>
-                  </tr>
-                  <tr>
-                    <td width="25" valign="top"><div style="background:#2e7d32; color:#fff; width:18px; height:18px; border-radius:50%; text-align:center; line-height:18px; font-size:12px; font-weight:bold;">3</div></td>
-                    <td>'Verify' button par click karein</td>
-                  </tr>
-                </table>
-                
-                <!-- 🛑 Footer -->
                 <p style="font-size:12px; color:#999; margin-top:30px; line-height:1.5; border-top:1px solid #eee; padding-top:20px;">
-                  Agar aapne login ki koshish <b>nahi</b> ki, toh is email ko ignore karein. Koi action lene ki zaroorat nahi hai.
+                  Agar aapne login ki koshish <b>nahi</b> ki, toh is email ko ignore karein.
                 </p>
               </td>
             </tr>
@@ -205,19 +153,16 @@ async function sendOtpEmail(email, otp) {
         </td></tr></table>
       </div>`;
 
-    // Google Script (Dakiye) ko message bhejna
     const resp = await fetch(MAIL_RELAY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        secret: MAIL_RELAY_SECRET,
-        to: email,
+        secret: MAIL_RELAY_SECRET, to: email,
         subject: `🥦 ${APP_NAME} - Aapka Login OTP`,
         text: `Aapka OTP: ${otp} (${OTP_EXPIRE_MIN} min valid hai)`,
         html: htmlBody
       })
     });
-
     const data = await resp.json();
     return data.success === true;
   } catch (err) {
@@ -232,9 +177,7 @@ async function sendOtpEmail(email, otp) {
 app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email || !isValidEmail(email)) {
-      return res.json({ success: false, message: "Valid email daalen." });
-    }
+    if (!email || !isValidEmail(email)) return res.json({ success: false, message: "Valid email daalen." });
     const cleanEmail = email.toLowerCase().trim();
     const now = Date.now();
     const today = todayIST();
@@ -245,12 +188,8 @@ app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
       const rem = Math.ceil((rec.blockedUntil - now) / 3600000);
       return res.json({ success: false, message: `Aap ${rem} ghante ke liye block hain.` });
     }
-    if (rec.blockedUntil > 0 && rec.blockedUntil <= now) {
-      rec.sendCount = 0; rec.blockedUntil = 0;
-    }
-    if (rec.date !== today) {
-      rec.sendCount = 0; rec.date = today;
-    }
+    if (rec.blockedUntil > 0 && rec.blockedUntil <= now) { rec.sendCount = 0; rec.blockedUntil = 0; }
+    if (rec.date !== today) { rec.sendCount = 0; rec.date = today; }
 
     if (rec.sendCount >= OTP_MAX_SEND_PER_DAY) {
       rec.blockedUntil = now + (OTP_BLOCK_HOURS * 3600000);
@@ -259,16 +198,11 @@ app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
     }
 
     const otp = generateOTP();
-    rec.otp = otp;
-    rec.otpTime = now;
-    rec.sendCount += 1;
-    rec.verifyAttempts = 0;
+    rec.otp = otp; rec.otpTime = now; rec.sendCount += 1; rec.verifyAttempts = 0;
     await setOtpRecord(cleanEmail, rec);
 
     const sent = await sendOtpEmail(cleanEmail, otp);
-    if (!sent) {
-      return res.json({ success: false, message: "Email nahi ja payi. Dobara try karein." });
-    }
+    if (!sent) return res.json({ success: false, message: "Email nahi ja payi. Dobara try karein." });
 
     res.json({ success: true, message: `OTP bhej diya! ${OTP_EXPIRE_MIN} min mein use karein.` });
   } catch (error) {
@@ -278,14 +212,12 @@ app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 2. ✅ OTP VERIFY + VIP PASS (Custom Token)
+// 2. ✅ OTP VERIFY + VIP PASS
 // ==========================================
 app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
   try {
     const { email, code } = req.body;
-    if (!email || !code || !isValidEmail(email)) {
-      return res.json({ success: false, message: "Email aur code zaroori hai" });
-    }
+    if (!email || !code || !isValidEmail(email)) return res.json({ success: false, message: "Email aur code zaroori hai" });
     const cleanEmail = email.toLowerCase().trim();
     const now = Date.now();
 
@@ -295,9 +227,7 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
       const rem = Math.ceil((rec.blockedUntil - now) / 3600000);
       return res.json({ success: false, message: `Aap ${rem} ghante ke liye block hain.` });
     }
-    if (!rec.otp) {
-      return res.json({ success: false, message: "Pehle OTP mangaiye." });
-    }
+    if (!rec.otp) return res.json({ success: false, message: "Pehle OTP mangaiye." });
     if (now - rec.otpTime > OTP_EXPIRE_MIN * 60000) {
       rec.otp = ""; await setOtpRecord(cleanEmail, rec);
       return res.json({ success: false, message: "OTP expire ho gaya! Naya mangaiye." });
@@ -306,8 +236,7 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
     if (rec.otp !== String(code).trim()) {
       rec.verifyAttempts = (rec.verifyAttempts || 0) + 1;
       if (rec.verifyAttempts >= OTP_MAX_VERIFY_ATTEMPTS) {
-        rec.otp = "";
-        rec.blockedUntil = now + (OTP_BLOCK_HOURS * 3600000);
+        rec.otp = ""; rec.blockedUntil = now + (OTP_BLOCK_HOURS * 3600000);
         await setOtpRecord(cleanEmail, rec);
         return res.json({ success: false, message: `Bahut zyada galat attempts! ${OTP_BLOCK_HOURS} ghante ke liye block ho gaye.` });
       }
@@ -315,11 +244,9 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
       return res.json({ success: false, message: `Galat OTP! (${OTP_MAX_VERIFY_ATTEMPTS - rec.verifyAttempts} attempts baaki)` });
     }
 
-    // ✅ Sahi OTP
     rec.otp = ""; rec.otpTime = 0; rec.sendCount = 0; rec.verifyAttempts = 0;
     await setOtpRecord(cleanEmail, rec);
 
-    // 🎫 VIP PASS — Firebase Admin SDK ka built-in secure custom token
     const uid = emailToKey(cleanEmail);
     const vipToken = await admin.auth().createCustomToken(uid, { email: cleanEmail });
 
@@ -331,9 +258,10 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 3. 🛡️ SECURE REGISTRATION (phone verification NAHI hai — sirf email verified)
+// 3. 🛡️ SECURE REGISTRATION
+// 🛡️ FIX: ab generalLimiter lagaya (pehle anonymous+unlimited tha)
 // ==========================================
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', generalLimiter, async (req, res) => {
   try {
     const { phone, name, email, referCode, userToken } = req.body;
     const cleanEmail = email ? email.toLowerCase().trim() : "";
@@ -343,7 +271,6 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     const decodedToken = await admin.auth().verifyIdToken(userToken);
-
     if ((decodedToken.email || "").toLowerCase() !== cleanEmail) {
       return res.json({ success: false, message: "Security Alert: Token aur Email match nahi ho rahe!" });
     }
@@ -354,9 +281,7 @@ app.post('/api/auth/register', async (req, res) => {
       const allReferCodes = referSnap.val() || {};
       if (allReferCodes[referCode]) {
         referrerPhone = allReferCodes[referCode];
-        if (referrerPhone === phone) {
-          return res.json({ success: false, message: "Khud ko refer nahi kar sakte!" });
-        }
+        if (referrerPhone === phone) return res.json({ success: false, message: "Khud ko refer nahi kar sakte!" });
       } else {
         return res.json({ success: false, message: "Referral code galat hai!" });
       }
@@ -375,7 +300,7 @@ app.post('/api/auth/register', async (req, res) => {
       const waMessage = encodeURIComponent(`Hi customer support, main Sabzi Fresh app par apna purana Gmail bhool gaya hoon.\n\nMera Mobile Number: ${phone}\n\nKripya is number ka fir se account banane ka permission de do.`);
       return res.json({
         success: false,
-        message: "⚠️ Yeh Mobile Number pehle se registered hai! Kripya us Gmail se Login karein jo aapne pehle use kiya tha.\n\nAgar aap apna purana Gmail bhool gaye hain, toh Admin ko WhatsApp karein.",
+        message: "⚠️ Yeh Mobile Number pehle se registered hai! Kripya us Gmail se Login karein.\n\nAgar aap apna purana Gmail bhool gaye hain, toh Admin ko WhatsApp karein.",
         showWhatsAppSupport: true,
         whatsappLink: `https://wa.me/${myWhatsAppNumber}?text=${waMessage}`
       });
@@ -391,9 +316,6 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// ==========================================
-// 🔧 HELPER: token verify karke email nikalna
-// ==========================================
 async function verifyAndGetEmail(userToken) {
   const decoded = await admin.auth().verifyIdToken(userToken);
   return (decoded.email || "").toLowerCase().trim();
@@ -401,8 +323,9 @@ async function verifyAndGetEmail(userToken) {
 
 // ==========================================
 // 4. 🛒 SECURE BILL CALCULATOR
+// 🛡️ FIX: generalLimiter add kiya
 // ==========================================
-app.post('/api/order/calculate', async (req, res) => {
+app.post('/api/order/calculate', generalLimiter, async (req, res) => {
   try {
     const { cartItems } = req.body;
     if (!cartItems) return res.json({ success: false, message: "Cart khali hai" });
@@ -444,32 +367,25 @@ app.post('/api/order/calculate', async (req, res) => {
 
 // ==========================================
 // 5. 🚀 SECURE ORDER MANAGER
-// 🛡️ Token ka email 'users/{phone}/email' se match hona zaroori hai
 // ==========================================
 app.post('/api/order/place', orderLimiter, async (req, res) => {
   try {
     const { cartItems, customerDetails, userToken } = req.body;
-
     if (!cartItems || !customerDetails || !customerDetails.phone || !userToken) {
       return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
     }
 
     const tokenEmail = await verifyAndGetEmail(userToken);
-
     const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
 
-    if (!userData) {
-      return res.json({ success: false, message: "User record nahi mila." });
-    }
+    if (!userData) return res.json({ success: false, message: "User record nahi mila." });
     if ((userData.email || "").toLowerCase() !== tokenEmail) {
       return res.json({ success: false, message: "Security Alert: Aap sirf apne khud ke account se order kar sakte hain." });
     }
-    if (userData.blocked === true) {
-      return res.json({ success: false, message: "Aapka account block hai. Aap order nahi kar sakte." });
-    }
+    if (userData.blocked === true) return res.json({ success: false, message: "Aapka account block hai. Aap order nahi kar sakte." });
 
     const settingsDB = (await db.ref('/settings').once('value')).val() || {};
-    if (settingsDB.isAppClosed === true) return res.json({ success: false, message: "Abhi dukan band hai. Kripya khulne ke baad order karein." });
+    if (settingsDB.isAppClosed === true) return res.json({ success: false, message: "Abhi dukan band hai." });
 
     const productsDB = (await db.ref('/products').once('value')).val() || {};
     let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 0;
@@ -496,9 +412,7 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
 
     if (secureSubtotal === 0) return res.json({ success: false, message: "Cart is empty" });
 
-    let stockDeducted = [];
-    let transactionFailed = false;
-    let failedItemName = "";
+    let stockDeducted = []; let transactionFailed = false; let failedItemName = "";
 
     for (let item of itemsObj) {
       const productRef = db.ref(`/products/${item.id}`);
@@ -534,6 +448,11 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
 
     let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
+    // ℹ️ NOTE: Agar koi rider online nahi hai, assignedRider null rahega.
+    // Ye purani behavior hai — lekin ab naya '/api/rider/set-duty' endpoint
+    // isko fix karta hai: jab bhi koi rider duty ON karega, aisa koi bhi
+    // "orphan" order automatically usko assign ho jayega. Isliye order
+    // ab kabhi permanently "invisible" nahi rahega.
     let assignedRiderEmail = null;
     const ridersSnap = await db.ref('/riders').orderByChild('status').equalTo('online').once('value');
     if (ridersSnap.exists()) {
@@ -566,7 +485,7 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
     await db.ref(`/orders/${orderId}`).set(orderData);
 
     if (TELEGRAM_SCRIPT_URL) {
-      const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}`;
+      const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}${!assignedRiderEmail ? '\n\n⚠️ *KOI RIDER ONLINE NAHI THA — auto-assign hoga jab koi duty ON karega.*' : ''}`;
       await fetch(TELEGRAM_SCRIPT_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ 'message': teleMessage })
@@ -640,10 +559,7 @@ app.post('/api/order/rider-update', async (req, res) => {
     if (newStatus === "Delivered" && orderData.status !== "Delivered" && orderData.phone) {
       const userRef = db.ref(`/users/${orderData.phone}`);
       const { committed, snapshot } = await userRef.transaction((user) => {
-        if (user && user.referredBy && user.referralStatus === "pending") {
-          user.referralStatus = "completed_processing";
-          return user;
-        }
+        if (user && user.referredBy && user.referralStatus === "pending") { user.referralStatus = "completed_processing"; return user; }
         return undefined;
       });
       if (committed && snapshot.val()) {
@@ -662,6 +578,94 @@ app.post('/api/order/rider-update', async (req, res) => {
     await orderRef.update(updates);
     res.json({ success: true, message: "Status Updated Successfully" });
   } catch (error) { res.json({ success: false, message: "Update fail ho gaya." }); }
+});
+
+// ==========================================
+// 6b. 🛵🆕 RIDER: DUTY ON/OFF + AUTO-ASSIGN UNCLAIMED ORDERS
+// 🛡️ NAYA FEATURE: Rider App ab seedha Firebase mein status likhne ke
+// bajaye is endpoint ko call karega. Jab "duty ON" hoga, ye backend
+// saare "orphan" orders (jinka assignedRider null hai kyunki order
+// place hote waqt koi rider online nahi tha) ko is rider ko de dega —
+// sabse purana order pehle. Isse koi bhi order ab kabhi "gayab"
+// (permanently invisible) nahi rahega.
+// ==========================================
+app.post('/api/rider/set-duty', async (req, res) => {
+  try {
+    const { riderToken, isOnline } = req.body;
+    if (!riderToken || typeof isOnline !== 'boolean') {
+      return res.json({ success: false, message: "Missing info" });
+    }
+
+    const decodedRider = await admin.auth().verifyIdToken(riderToken);
+    const riderEmail = decodedRider.email;
+    const riderUid = decodedRider.uid;
+
+    // Rider apna khud ka node hi update kar sakta hai
+    await db.ref(`/riders/${riderUid}`).update({
+      email: riderEmail,
+      status: isOnline ? 'online' : 'offline',
+      lastActive: Date.now()
+    });
+
+    let reassignedCount = 0;
+
+    if (isOnline) {
+      const ordersSnap = await db.ref('/orders')
+        .orderByChild('status')
+        .equalTo('Packing in Progress ⏳')
+        .once('value');
+      const allPending = ordersSnap.val() || {};
+
+      // Sabse purana order pehle assign ho, isliye timestamp se sort
+      const unassigned = Object.keys(allPending)
+        .map(key => ({ key, ...allPending[key] }))
+        .filter(o => !o.assignedRider)
+        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+      for (const order of unassigned) {
+        const orderRef = db.ref(`/orders/${order.key}`);
+        // 🛡️ Transaction use kiya taaki agar 2 riders ek saath online
+        // ho jayein, to same order do logon ko double-assign na ho
+        const result = await orderRef.transaction((current) => {
+          if (current && !current.assignedRider) {
+            current.assignedRider = riderEmail;
+            return current;
+          }
+          return current;
+        });
+
+        if (result.committed && result.snapshot.val() && result.snapshot.val().assignedRider === riderEmail) {
+          reassignedCount++;
+          if (ONESIGNAL_RIDER_APP_ID && ONESIGNAL_RIDER_REST_KEY) {
+            try {
+              const payload = {
+                app_id: ONESIGNAL_RIDER_APP_ID,
+                filters: [{ field: "tag", key: "rider_email", relation: "=", value: riderEmail }],
+                headings: { en: "📦 Purana Order Mila!" },
+                contents: { en: `Order #${order.id || order.key} aapko assign ho gaya hai.` }
+              };
+              await fetch("https://onesignal.com/api/v1/notifications", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Accept": "application/json", "Authorization": `Basic ${ONESIGNAL_RIDER_REST_KEY}` },
+                body: JSON.stringify(payload)
+              });
+            } catch (e) { console.error("OneSignal reassign push error:", e); }
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: isOnline
+        ? (reassignedCount > 0 ? `Duty ON! ${reassignedCount} purana order aapko mil gaya.` : "Duty ON ho gayi.")
+        : "Duty OFF ho gayi.",
+      reassignedCount
+    });
+  } catch (error) {
+    console.error("Set duty error:", error);
+    res.json({ success: false, message: "Duty update fail ho gayi." });
+  }
 });
 
 // ==========================================
@@ -752,7 +756,6 @@ app.post('/api/admin/give-reward', async (req, res) => {
 
 // ==========================================
 // 9. 🚫 SECURE ORDER CANCEL
-// 🛡️ Token ka email order.email se match kiya jata hai
 // ==========================================
 app.post('/api/order/cancel', orderLimiter, async (req, res) => {
   try {
@@ -760,7 +763,6 @@ app.post('/api/order/cancel', orderLimiter, async (req, res) => {
     if (!orderId || !userToken) return res.json({ success: false, message: "Missing info" });
 
     const tokenEmail = await verifyAndGetEmail(userToken);
-
     const orderData = (await db.ref(`/orders/${orderId}`).once('value')).val();
     if (!orderData) return res.json({ success: false, message: "Order nahi mila." });
 
@@ -819,59 +821,69 @@ app.post('/api/admin/create-rider', async (req, res) => {
 
 // ==========================================
 // 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
+// 🛡️ FIX #1: console.log ab AUTH CHECK ke BAAD chal raha hai
+// (pehle bina-auth request bhi log-spam kar sakti thi)
+// 🛡️ FIX #2: segment name "All" wapas kiya (Total Subscriptions
+// aapke OneSignal app mein exist nahi karta to silently fail ho jata)
+// 🛡️ FIX #3: title/message par server-side length-validation add ki
 // ==========================================
 app.post('/api/admin/send-notification', async (req, res) => {
-  // 👉 NAYI LINE: Jaise hi request aayegi, server logs mein yeh print karega
-  console.log(`🔔 Notification Request Aayi! Title: ${req.body.title}`); 
-
   try {
     const { title, message, adminToken } = req.body;
-    
-    // 1. Admin Security Check
+
     const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
     if ((decodedAdmin.email || "").toLowerCase() !== ADMIN_EMAIL) {
       return res.json({ success: false, message: "Aapko Admin access nahi hai!" });
     }
 
-    // 2. Check if Keys exist
+    // ✅ Ab log auth-check ke BAAD print hota hai
+    console.log(`🔔 Notification Request Aayi! Title: ${title}`);
+
+    if (!title || !message) {
+      return res.json({ success: false, message: "Title aur message zaroori hai." });
+    }
+    if (String(title).length > 60) {
+      return res.json({ success: false, message: "Title 60 characters se zyada nahi ho sakta." });
+    }
+    if (String(message).length > 200) {
+      return res.json({ success: false, message: "Message 200 characters se zyada nahi ho sakta." });
+    }
+
     if (!ONESIGNAL_APP_ID || !ONESIGNAL_REST_KEY) {
       console.error("🚨 ERROR: OneSignal Keys Render mein missing hain!");
       return res.json({ success: false, message: "OneSignal Keys Missing!" });
     }
 
-    // 3. Payload with New Rule ("Total Subscriptions")
-    const payload = { 
-      app_id: ONESIGNAL_APP_ID, 
-      included_segments: ["Total Subscriptions"], 
-      headings: { en: title }, 
-      contents: { en: message } 
+    const payload = {
+      app_id: ONESIGNAL_APP_ID,
+      included_segments: ["All"], // 🛡️ FIX: "Total Subscriptions" hataya — confirm karo ki ye
+                                   // segment aapke OneSignal dashboard mein "Subscribed Users"
+                                   // ke against exist karta hai; agar naya API version use ho raha
+                                   // hai to yahan sahi segment-name daalna
+      headings: { en: title },
+      contents: { en: message }
     };
 
-    // 4. Bhejne ka order
     const response = await fetch("https://onesignal.com/api/v1/notifications", {
-      method: "POST", 
-      headers: { 
-        "Content-Type": "application/json", 
-        "Accept": "application/json",
-        "Authorization": `Basic ${ONESIGNAL_REST_KEY}` 
-      }, 
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json", "Authorization": `Basic ${ONESIGNAL_REST_KEY}` },
       body: JSON.stringify(payload)
     });
 
     const data = await response.json();
-    
-    // 5. Agar OneSignal ne error diya toh laal rang mein dikhayega
-    if(data.errors) {
-        console.error("🚨 OneSignal Error:", data.errors);
-        return res.json({ success: false, message: "OneSignal Error: " + JSON.stringify(data.errors) });
+
+    if (data.errors) {
+      console.error("🚨 OneSignal Error:", data.errors);
+      return res.json({ success: false, message: "OneSignal Error: " + JSON.stringify(data.errors) });
     }
 
     res.json({ success: true, message: "Notification sabko bhej di gayi hai! 🚀", response: data });
-  } catch (error) { 
+  } catch (error) {
     console.error("🚨 Notification Catch Error:", error);
-    res.json({ success: false, message: "Server error, Render Logs check karein." }); 
+    res.json({ success: false, message: "Server error, Render Logs check karein." });
   }
 });
+
 // ==========================================
 // 12. 🛵 RIDER DASHBOARD: Pending Orders
 // ==========================================
