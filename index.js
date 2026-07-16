@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -12,6 +13,10 @@ app.set('trust proxy', 1);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
   .split(',').map(s => s.trim()).filter(Boolean);
 
+if (ALLOWED_ORIGINS.length === 0) {
+  console.warn("🚨 WARNING: ALLOWED_ORIGINS set nahi hai — CORS abhi SABHI origins ke liye khula hai. Production mein isse zaroor set karein!");
+}
+
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin || ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
@@ -20,7 +25,7 @@ app.use(cors({
     return callback(new Error('CORS blocked: origin not allowed'));
   }
 }));
-app.use(express.json());
+app.use(express.json({ limit: '200kb' })); // 🛡️ FIX: body-size cap taaki koi bada payload bhej ke resource-abuse na kare
 
 // ==========================================
 // ⚙️ ENVIRONMENT VARIABLES
@@ -41,7 +46,15 @@ const ONESIGNAL_REST_KEY = (process.env.ONESIGNAL_REST_KEY || "").trim();
 const ONESIGNAL_RIDER_APP_ID = (process.env.ONESIGNAL_RIDER_APP_ID || "").trim();
 const ONESIGNAL_RIDER_REST_KEY = (process.env.ONESIGNAL_RIDER_REST_KEY || "").trim();
 
-const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "neerajkumar00999666@gmail.com").trim().toLowerCase();
+// 🛡️ FIX: admin email ab SIRF environment variable se aayega, source code mein
+// hardcoded plaintext nahi rahega (phishing/targeting risk tha). Agar env var
+// missing hai to server jaan-boojh kar start hi nahi hoga — taaki koi accidentally
+// bina admin-email set kiye deploy na kar de.
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+if (!ADMIN_EMAIL) {
+  console.error("🚨 FATAL: ADMIN_EMAIL environment variable Render dashboard mein set karein. Server band ho raha hai.");
+  process.exit(1);
+}
 
 const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
@@ -54,10 +67,12 @@ try {
     });
     console.log("✅ Firebase Admin Variable se successfully start ho gaya!");
   } else {
-    console.warn("🚨 WARNING: FIREBASE_SERVICE_ACCOUNT_JSON variable missing hai!");
+    console.error("🚨 FATAL: FIREBASE_SERVICE_ACCOUNT_JSON variable missing hai!");
+    process.exit(1);
   }
 } catch (error) {
-  console.error("🚨 ERROR: JSON Parse fail ho gaya. Variable theek se load nahi hua.", error);
+  console.error("🚨 FATAL: JSON Parse fail ho gaya. Variable theek se load nahi hua.", error);
+  process.exit(1);
 }
 
 const db = admin.database();
@@ -68,6 +83,11 @@ app.get('/', (req, res) => {
 
 // ==========================================
 // 🛡️ RATE LIMITERS
+// NOTE: Render free-tier par service idle hone par restart hoti hai, jisse
+// in-memory rate-limiters reset ho jaate hain. Isliye ye limiters "best-effort"
+// hain — asli/persistent protection Firebase mein save hone wale counters
+// (jaise OTP ka sendCount/blockedUntil neeche) se aati hai, jo restart ke
+// baad bhi bane rehte hain.
 // ==========================================
 const otpSendLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 6,
@@ -81,14 +101,26 @@ const orderLimiter = rateLimit({
   windowMs: 10 * 60 * 1000, max: 30,
   message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
 });
-// 🛡️ NAYA FIX: register aur calculate anonymous endpoints hain, inhe bhi rate-limit chahiye
 const generalLimiter = rateLimit({
   windowMs: 10 * 60 * 1000, max: 40,
   message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
 });
+// 🛡️ NAYA FIX: rider aur admin endpoints par pehle koi rate-limit nahi tha
+const riderActionLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, max: 60,
+  message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
+});
+const adminActionLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 50,
+  message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
+});
+const lookupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 15,
+  message: { success: false, message: "Bahut zyada requests. Thodi der baad try karein." }
+});
 
 // ==========================================
-// 🔑 OTP DATA HELPERS
+// 🔑 HELPERS
 // ==========================================
 function emailToKey(email) {
   return Buffer.from(email).toString('hex');
@@ -102,9 +134,91 @@ async function setOtpRecord(email, data) {
   const key = emailToKey(email);
   await db.ref(`otp_data/${key}`).set(data);
 }
-function generateOTP() { return Math.floor(100000 + Math.random() * 900000).toString(); }
-function isValidEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
+
+// 🛡️ FIX: Math.random() cryptographically secure nahi tha, ab crypto.randomInt() use ho raha hai
+function generateOTP() {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function isValidEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(e || '')); }
+
+// 🛡️ NAYA FIX: phone-number format validate karne ke liye — pehle sirf frontend
+// check karta tha, backend kuch bhi accept kar leta tha.
+function isValidPhone(p) { return /^[6-9][0-9]{9}$/.test(String(p || '').trim()); }
+
 function todayIST() { return new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }); }
+
+// 🛡️ NAYA FIX: user-supplied text (name, address, cancel-reason) ab yahin
+// backend par bhi sanitize hota hai — pehle sirf frontend sanitize karta tha,
+// jo koi bhi direct-API-call se bypass kar sakta tha (stored-XSS risk, jo
+// Rider/Admin app mein render hone par trigger ho sakta tha).
+function sanitizeText(str, maxLen = 300) {
+  if (str === null || str === undefined) return '';
+  let s = String(str).trim();
+  if (s.length > maxLen) s = s.substring(0, maxLen);
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// 🛡️ CRITICAL FIX: ye helper CHECK karta hai ki caller sach mein ek
+// registered rider hai ya nahi. Pehle koi bhi rider-endpoint sirf ye dekhta
+// tha ki token valid Firebase Auth token hai — matlab koi bhi logged-in
+// CUSTOMER bhi khud ko "rider" bata ke duty-on kar sakta tha aur saare
+// pending orders (naam/phone/address samet) apne paas assign karva sakta tha.
+async function isRegisteredRider(uid) {
+  const snap = await db.ref(`riders/${uid}`).once('value');
+  return snap.exists();
+}
+
+// 🛡️ NAYA FIX (phone ko delivery-contact maana gaya, account-identity nahi):
+// Amazon/Flipkart/Zomato ki tarah is app mein bhi asli account-identity
+// EMAIL hai — phone sirf ek delivery-contact field hai jo order-order pe
+// alag ho sakta hai. Isliye account lookup ab email se hota hai, phone se nahi.
+// (users/ node abhi bhi phone-keyed hai backward-compatibility ke liye,
+// lekin usko DHOONDHNE ka tarika ab email-query se hai.)
+async function getUserAccountByEmail(email) {
+  if (!email) return null;
+  const snap = await db.ref('/users').orderByChild('email').equalTo(email).once('value');
+  const val = snap.val();
+  if (!val) return null;
+  const accountPhone = Object.keys(val)[0];
+  return { accountPhone, ...val[accountPhone] };
+}
+
+async function verifyAndGetEmail(userToken) {
+  const decoded = await admin.auth().verifyIdToken(userToken);
+  return (decoded.email || "").toLowerCase().trim();
+}
+
+// 🛡️ FIX: status-string mismatch — Admin panel dropdown kabhi bina-emoji
+// wali value bhejta tha ("Packing in Progress") jabki DB mein emoji-wali
+// value store hoti hai ("Packing in Progress ⏳"), jisse update silently
+// reject ho jaata tha. Ab dono forms normalize ho ke sahi canonical value
+// mein map hote hain.
+const STATUS_CANONICAL_MAP = {
+  'packing in progress': 'Packing in Progress ⏳',
+  'confirmed': 'Confirmed',
+  'out for delivery': 'Out for Delivery',
+  'delivered': 'Delivered',
+  'returned/rejected': 'Returned/Rejected',
+  'cancelled by sabzifresh': 'Cancelled by SabziFresh',
+  'cancelled by customer': 'Cancelled by Customer'
+};
+function normalizeStatus(input) {
+  if (!input) return null;
+  // eslint-disable-next-line no-control-regex
+  const key = String(input).trim().toLowerCase().replace(/[^\x00-\x7F]/g, '').trim();
+  return STATUS_CANONICAL_MAP[key] || null;
+}
+const ALLOWED_RIDER_STATUSES = [
+  'Packing in Progress ⏳', 'Confirmed', 'Out for Delivery',
+  'Delivered', 'Returned/Rejected', 'Cancelled by SabziFresh'
+];
+const ALLOWED_ADMIN_STATUSES = [...ALLOWED_RIDER_STATUSES, 'Cancelled by Customer'];
 
 // ==========================================
 // 📧 MAIL — PREMIUM OTP TEMPLATE (GAS Relay ke through)
@@ -112,7 +226,7 @@ function todayIST() { return new Date().toLocaleDateString("en-IN", { timeZone: 
 async function sendOtpEmail(email, otp) {
   if (!MAIL_RELAY_URL || !MAIL_RELAY_SECRET) {
     console.warn("🚨 MAIL_RELAY_URL/SECRET missing — email nahi ja sakti!");
-    return false;
+    return { ok: false, reason: 'config_missing' };
   }
   try {
     const otpDigitsHtml = otp.split("").map(d =>
@@ -164,10 +278,18 @@ async function sendOtpEmail(email, otp) {
       })
     });
     const data = await resp.json();
-    return data.success === true;
+    // 🛡️ FIX: pehle sirf true/false return hota tha, GAS quota-exceeded ya
+    // koi bhi specific relay-error silently "email nahi ja payi" ban jaata
+    // tha — ab poora relay-response bhi log hota hai taaki peak-hour failure
+    // turant pakड़ mein aaye.
+    if (data.success !== true) {
+      console.error("🚨 Mail relay ne fail bataya:", JSON.stringify(data));
+      return { ok: false, reason: 'relay_rejected', detail: data };
+    }
+    return { ok: true };
   } catch (err) {
-    console.error("Mail relay call error:", err);
-    return false;
+    console.error("🚨 Mail relay call error:", err);
+    return { ok: false, reason: 'network_error' };
   }
 }
 
@@ -201,8 +323,8 @@ app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
     rec.otp = otp; rec.otpTime = now; rec.sendCount += 1; rec.verifyAttempts = 0;
     await setOtpRecord(cleanEmail, rec);
 
-    const sent = await sendOtpEmail(cleanEmail, otp);
-    if (!sent) return res.json({ success: false, message: "Email nahi ja payi. Dobara try karein." });
+    const sendResult = await sendOtpEmail(cleanEmail, otp);
+    if (!sendResult.ok) return res.json({ success: false, message: "Email nahi ja payi. Dobara try karein." });
 
     res.json({ success: true, message: `OTP bhej diya! ${OTP_EXPIRE_MIN} min mein use karein.` });
   } catch (error) {
@@ -233,7 +355,13 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
       return res.json({ success: false, message: "OTP expire ho gaya! Naya mangaiye." });
     }
 
-    if (rec.otp !== String(code).trim()) {
+    // 🛡️ Constant-time compare — chhoti si extra hardening taaki OTP-string
+    // ki length/timing se koi info leak na ho.
+    const submitted = String(code).trim();
+    const isMatch = submitted.length === rec.otp.length &&
+      crypto.timingSafeEqual(Buffer.from(submitted), Buffer.from(rec.otp));
+
+    if (!isMatch) {
       rec.verifyAttempts = (rec.verifyAttempts || 0) + 1;
       if (rec.verifyAttempts >= OTP_MAX_VERIFY_ATTEMPTS) {
         rec.otp = ""; rec.blockedUntil = now + (OTP_BLOCK_HOURS * 3600000);
@@ -250,7 +378,17 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
     const uid = emailToKey(cleanEmail);
     const vipToken = await admin.auth().createCustomToken(uid, { email: cleanEmail });
 
-    res.json({ success: true, message: "Email verify ho gaya! ✔️", token: vipToken });
+    // Agar is email ka account pehle se bana hua hai, uska account-phone
+    // bhi saath mein bhej dete hain — isse frontend '/api/auth/lookup' ko
+    // dobara call kiye bina hi seedha finalizeLogin kar sakta hai.
+    const existingAccount = await getUserAccountByEmail(cleanEmail);
+
+    res.json({
+      success: true,
+      message: "Email verify ho gaya! ✔️",
+      token: vipToken,
+      phone: existingAccount ? existingAccount.accountPhone : null
+    });
   } catch (error) {
     console.error("OTP verify error:", error);
     res.json({ success: false, message: "Server Error" });
@@ -258,21 +396,58 @@ app.post('/api/otp/verify', otpVerifyLimiter, async (req, res) => {
 });
 
 // ==========================================
+// 2b. 🔎 EMAIL LOOKUP (frontend ye endpoint call karta tha, pehle exist hi
+// nahi karta tha — har login pe ek extra failed request + latency lagti thi)
+// ==========================================
+app.post('/api/auth/lookup', lookupLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || !isValidEmail(email)) return res.json({ success: false, message: "Valid email daalen." });
+    const cleanEmail = email.toLowerCase().trim();
+    const account = await getUserAccountByEmail(cleanEmail);
+    if (account) return res.json({ success: true, phone: account.accountPhone });
+    return res.json({ success: true, isNew: true });
+  } catch (error) {
+    console.error("Lookup error:", error);
+    res.json({ success: false, message: "Server Error" });
+  }
+});
+
+// ==========================================
 // 3. 🛡️ SECURE REGISTRATION
-// 🛡️ FIX: ab generalLimiter lagaya (pehle anonymous+unlimited tha)
+// (account ka DB-key abhi bhi phone hai — backward-compatible — lekin ab
+//  phone format validate hota hai, naam sanitize hota hai, aur same email
+//  se dusra account banna block hota hai)
 // ==========================================
 app.post('/api/auth/register', generalLimiter, async (req, res) => {
   try {
     const { phone, name, email, referCode, userToken } = req.body;
     const cleanEmail = email ? email.toLowerCase().trim() : "";
+    const cleanName = sanitizeText(name, 60);
 
-    if (!phone || !name || !userToken || !cleanEmail) {
+    if (!phone || !cleanName || !userToken || !cleanEmail) {
       return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
+    }
+    // 🛡️ NAYA FIX: phone format ab backend par bhi validate hota hai
+    if (!isValidPhone(phone)) {
+      return res.json({ success: false, message: "Sahi 10-digit mobile number daalein!" });
+    }
+    if (!isValidEmail(cleanEmail)) {
+      return res.json({ success: false, message: "Sahi email daalein!" });
     }
 
     const decodedToken = await admin.auth().verifyIdToken(userToken);
     if ((decodedToken.email || "").toLowerCase() !== cleanEmail) {
       return res.json({ success: false, message: "Security Alert: Token aur Email match nahi ho rahe!" });
+    }
+
+    // 🛡️ NAYA FIX: pehle sirf phone-uniqueness check hota tha — koi user
+    // same email se alag-alag phone ke saath multiple accounts bana sakta
+    // tha (block-evasion / referral-farming ke liye). Ab email-uniqueness
+    // bhi check hoti hai.
+    const existingByEmail = await getUserAccountByEmail(cleanEmail);
+    if (existingByEmail) {
+      return res.json({ success: false, message: "Ye email pehle se ek account se judi hai. Kripya login karein." });
     }
 
     let referrerPhone = null;
@@ -289,7 +464,7 @@ app.post('/api/auth/register', generalLimiter, async (req, res) => {
 
     const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
     const newUser = {
-      name, email: cleanEmail, phone, savedVillage: "", savedStreet: "", referCode: newCode,
+      name: cleanName, email: cleanEmail, phone, savedVillage: "", savedStreet: "", referCode: newCode,
       freeDeliveries: 0, rewardExpiry: null, registeredAt: Date.now(),
       referredBy: referrerPhone || null, referralStatus: referrerPhone ? "pending" : null
     };
@@ -316,14 +491,8 @@ app.post('/api/auth/register', generalLimiter, async (req, res) => {
   }
 });
 
-async function verifyAndGetEmail(userToken) {
-  const decoded = await admin.auth().verifyIdToken(userToken);
-  return (decoded.email || "").toLowerCase().trim();
-}
-
 // ==========================================
 // 4. 🛒 SECURE BILL CALCULATOR
-// 🛡️ FIX: generalLimiter add kiya
 // ==========================================
 app.post('/api/order/calculate', generalLimiter, async (req, res) => {
   try {
@@ -336,7 +505,7 @@ app.post('/api/order/calculate', generalLimiter, async (req, res) => {
     let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 0;
     let adminFreeLimit = parseInt(settingsDB.minFreeDeliveryThreshold) || 0;
 
-    let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
+    let secureSubtotal = 0; let secureItemsList = [];
 
     for (let itemId in cartItems) {
       let qty = parseFloat(cartItems[itemId]);
@@ -345,9 +514,7 @@ app.post('/api/order/calculate', generalLimiter, async (req, res) => {
         let itemTotal = asliProduct.price * qty;
         secureSubtotal += itemTotal;
         let itemName = asliProduct.nameEn || asliProduct.adminName || "Unknown Item";
-        let itemQtyText = asliProduct.qtyText || "1 Kg";
         secureItemsList.push(`${itemName} x${qty} (₹${itemTotal})`);
-        itemsObj.push({ name: itemName, nameHi: asliProduct.nameHi || "", price: asliProduct.price, qty, qtyText: itemQtyText });
       }
     }
 
@@ -367,6 +534,12 @@ app.post('/api/order/calculate', generalLimiter, async (req, res) => {
 
 // ==========================================
 // 5. 🚀 SECURE ORDER MANAGER
+// 🛡️ FIX: order ab EMAIL se account dhoondta hai, phone se nahi — isse
+// customer checkout-form mein KISI BHI valid delivery-number ko istemal
+// kar sakta hai (jaise Amazon/Flipkart/Zomato mein hota hai), apne account
+// wale phone tak limited nahi rehta. Reward/cancelCount jaisi account-level
+// cheezein hamesha real logged-in account (email se dhoondha gaya) par hi
+// update hoti hain — delivery-phone chahe kuch bhi ho.
 // ==========================================
 app.post('/api/order/place', orderLimiter, async (req, res) => {
   try {
@@ -375,14 +548,22 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
       return res.json({ success: false, message: "Invalid order data ya Token missing hai" });
     }
 
-    const tokenEmail = await verifyAndGetEmail(userToken);
-    const userData = (await db.ref(`/users/${customerDetails.phone}`).once('value')).val();
-
-    if (!userData) return res.json({ success: false, message: "User record nahi mila." });
-    if ((userData.email || "").toLowerCase() !== tokenEmail) {
-      return res.json({ success: false, message: "Security Alert: Aap sirf apne khud ke account se order kar sakte hain." });
+    // 🛡️ Delivery-contact number sirf format-validate hota hai — account
+    // ke phone se match karna zaroori NAHI hai (Amazon-style behaviour).
+    if (!isValidPhone(customerDetails.phone)) {
+      return res.json({ success: false, message: "Sahi delivery mobile number daalein!" });
     }
-    if (userData.blocked === true) return res.json({ success: false, message: "Aapka account block hai. Aap order nahi kar sakte." });
+    const deliveryName = sanitizeText(customerDetails.name, 60);
+    const deliveryAddress = sanitizeText(customerDetails.address, 300);
+    if (!deliveryName || !deliveryAddress) {
+      return res.json({ success: false, message: "Naam aur address zaroori hai!" });
+    }
+
+    const tokenEmail = await verifyAndGetEmail(userToken);
+    const userAccount = await getUserAccountByEmail(tokenEmail);
+
+    if (!userAccount) return res.json({ success: false, message: "User record nahi mila." });
+    if (userAccount.blocked === true) return res.json({ success: false, message: "Aapka account block hai. Aap order nahi kar sakte." });
 
     const settingsDB = (await db.ref('/settings').once('value')).val() || {};
     if (settingsDB.isAppClosed === true) return res.json({ success: false, message: "Abhi dukan band hai." });
@@ -440,19 +621,17 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
 
     let secureDeliveryCharge = (adminFreeLimit > 0 && secureSubtotal >= adminFreeLimit) ? 0 : adminDeliveryFee;
 
-    if (customerDetails.usedReward && secureSubtotal > 0 && parseInt(userData.freeDeliveries) > 0) {
+    // 🛡️ FIX: reward hamesha ACCOUNT node (email se mila accountPhone) par
+    // update hota hai — customerDetails.phone (jo alag delivery-number ho
+    // sakta hai) par nahi.
+    if (customerDetails.usedReward && secureSubtotal > 0 && parseInt(userAccount.freeDeliveries) > 0) {
       secureDeliveryCharge = 0;
-      let newFreeDel = parseInt(userData.freeDeliveries) - 1;
-      await db.ref(`/users/${customerDetails.phone}`).update({ freeDeliveries: newFreeDel });
+      let newFreeDel = parseInt(userAccount.freeDeliveries) - 1;
+      await db.ref(`/users/${userAccount.accountPhone}`).update({ freeDeliveries: newFreeDel });
     }
 
     let secureFinalTotal = secureSubtotal + secureDeliveryCharge;
 
-    // ℹ️ NOTE: Agar koi rider online nahi hai, assignedRider null rahega.
-    // Ye purani behavior hai — lekin ab naya '/api/rider/set-duty' endpoint
-    // isko fix karta hai: jab bhi koi rider duty ON karega, aisa koi bhi
-    // "orphan" order automatically usko assign ho jayega. Isliye order
-    // ab kabhi permanently "invisible" nahi rahega.
     let assignedRiderEmail = null;
     const ridersSnap = await db.ref('/riders').orderByChild('status').equalTo('online').once('value');
     if (ridersSnap.exists()) {
@@ -472,20 +651,20 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
       assignedRiderEmail = bestRiders[Math.floor(Math.random() * bestRiders.length)].email;
     }
 
-    const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2, 4).toUpperCase();
+    const orderId = "SF" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 6).toUpperCase();
     const orderTimestamp = Date.now();
 
     const orderData = {
       id: orderId, timestamp: orderTimestamp, status: "Packing in Progress ⏳", total: secureFinalTotal,
-      deliveryCharge: secureDeliveryCharge, customer: customerDetails.name, phone: customerDetails.phone,
-      email: userData.email || '', address: customerDetails.address, items: itemsObj, assignedRider: assignedRiderEmail,
-      usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && customerDetails.usedReward
+      deliveryCharge: secureDeliveryCharge, customer: deliveryName, phone: customerDetails.phone,
+      email: userAccount.email || '', address: deliveryAddress, items: itemsObj, assignedRider: assignedRiderEmail,
+      usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && !!customerDetails.usedReward
     };
 
     await db.ref(`/orders/${orderId}`).set(orderData);
 
     if (TELEGRAM_SCRIPT_URL) {
-      const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${customerDetails.name}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${customerDetails.address}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}${!assignedRiderEmail ? '\n\n⚠️ *KOI RIDER ONLINE NAHI THA — auto-assign hoga jab koi duty ON karega.*' : ''}`;
+      const teleMessage = `🚨 *NEW SECURE ORDER!* 🚨\n\n📦 *ID:* #${orderId}\n👤 *Name:* ${deliveryName}\n📞 *Phone:* ${customerDetails.phone}\n📍 *Address:* ${deliveryAddress}\n\n🛒 *Items:*\n${secureItemsList.join('\n')}\n\n🚚 *Delivery:* ₹${secureDeliveryCharge}\n💰 *Total Paid:* ₹${secureFinalTotal}${!assignedRiderEmail ? '\n\n⚠️ *KOI RIDER ONLINE NAHI THA — auto-assign hoga jab koi duty ON karega.*' : ''}`;
       await fetch(TELEGRAM_SCRIPT_URL, {
         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ 'message': teleMessage })
@@ -516,80 +695,126 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
 });
 
 // ==========================================
-// 6. 🛵 RIDER: STATUS UPDATE
+// 5b. Referral/return-count jaisi account-level cheezein ab hamesha
+// order.email se account dhoondh ke update hoti hain (order.phone ek
+// alag delivery-contact ho sakta hai, account-key nahi).
 // ==========================================
-const ALLOWED_STATUSES = [
-  'Packing in Progress ⏳', 'Confirmed', 'Out for Delivery',
-  'Delivered', 'Returned/Rejected', 'Cancelled by SabziFresh'
-];
+async function processReferralOnDelivery(orderData) {
+  if (!orderData.email) return;
+  const account = await getUserAccountByEmail(orderData.email);
+  if (!account || !account.referredBy || account.referralStatus !== "pending") return;
+  const userRef = db.ref(`/users/${account.accountPhone}`);
+  const { committed, snapshot } = await userRef.transaction((user) => {
+    if (user && user.referredBy && user.referralStatus === "pending") { user.referralStatus = "completed_processing"; return user; }
+    return undefined;
+  });
+  if (committed && snapshot.val()) {
+    const userData = snapshot.val();
+    await db.ref(`/users/${userData.referredBy}`).transaction((referrer) => {
+      if (referrer) { referrer.freeDeliveries = (parseInt(referrer.freeDeliveries) || 0) + 3; referrer.rewardExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); }
+      return referrer;
+    });
+    await userRef.update({ referralStatus: "completed" });
+  }
+}
+async function restockCancelledItems(orderData) {
+  if (!orderData.items) return;
+  for (let item of orderData.items) {
+    if (item.id) {
+      await db.ref(`/products/${item.id}`).transaction((product) => {
+        if (product) product.stock = (parseFloat(product.stock) || 0) + parseFloat(item.qty);
+        return product;
+      });
+    }
+  }
+}
+async function incrementAccountCounter(email, field) {
+  if (!email) return;
+  const account = await getUserAccountByEmail(email);
+  if (!account) return;
+  await db.ref(`/users/${account.accountPhone}/${field}`).transaction(c => (c || 0) + 1);
+}
 
-app.post('/api/order/rider-update', async (req, res) => {
+// ==========================================
+// 6. 🛵 RIDER: STATUS UPDATE
+// 🛡️ CRITICAL FIX: ab caller ki rider-membership DB mein verify hoti hai.
+// 🛡️ FIX: ab order-claiming (assignedRider null → set) transaction se hoti
+// hai taaki do riders ek saath ek hi unclaimed order na claim kar sakein,
+// aur koi bhi authenticated user (rider na hote hue bhi) unclaimed order
+// status badal na sake.
+// 🛡️ FIX: cancelReason ab backend mein save hota hai (pehle silently lost hota tha)
+// ==========================================
+app.post('/api/order/rider-update', riderActionLimiter, async (req, res) => {
   try {
-    const { orderId, newStatus, riderToken } = req.body;
+    const { orderId, newStatus, riderToken, cancelReason } = req.body;
     if (!orderId || !newStatus || !riderToken) return res.json({ success: false, message: "Missing info" });
 
     const decodedRider = await admin.auth().verifyIdToken(riderToken);
     const riderEmail = decodedRider.email;
+    const riderUid = decodedRider.uid;
 
-    if (!ALLOWED_STATUSES.includes(newStatus)) return res.json({ success: false, message: "Invalid status." });
+    // 🛡️ CRITICAL: caller sach mein registered rider hai ya nahi
+    if (!(await isRegisteredRider(riderUid))) {
+      return res.json({ success: false, message: "Aap rider ke roop mein register nahi hain." });
+    }
+
+    const canonicalStatus = normalizeStatus(newStatus);
+    if (!canonicalStatus || !ALLOWED_RIDER_STATUSES.includes(canonicalStatus)) {
+      return res.json({ success: false, message: "Invalid status." });
+    }
 
     const orderRef = db.ref(`/orders/${orderId}`);
     const orderSnap = await orderRef.once('value');
     const orderData = orderSnap.val();
     if (!orderData) return res.json({ success: false, message: "Order not found." });
 
-    if (orderData.assignedRider && orderData.assignedRider !== riderEmail) {
-      return res.json({ success: false, message: "Yeh order kisi aur rider ke paas hai." });
+    if (orderData.assignedRider) {
+      // Already kisi rider ko assign ho chuka hai — sirf wahi rider isse touch kar sakta hai
+      if (orderData.assignedRider !== riderEmail) {
+        return res.json({ success: false, message: "Yeh order kisi aur rider ke paas hai." });
+      }
+    } else {
+      // 🛡️ Unassigned/orphan order — sirf "Confirmed" (accept) transition se
+      // hi claim ho sakta hai, koi bhi doosra status-jump allowed nahi.
+      if (canonicalStatus !== 'Confirmed') {
+        return res.json({ success: false, message: "Pehle order ko Accept karein." });
+      }
+      // 🛡️ Transaction-safe claim — race-condition proof taaki 2 riders
+      // ek saath same order claim na kar payein.
+      const claimResult = await orderRef.child('assignedRider').transaction((current) => {
+        if (current) return; // koi aur pehle hi claim kar chuka — abort
+        return riderEmail;
+      });
+      if (!claimResult.committed) {
+        return res.json({ success: false, message: "Ye order abhi-abhi kisi aur rider ko assign ho gaya." });
+      }
     }
 
     const wasActive = !['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(orderData.status);
-    const isNowCancelled = ['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(newStatus);
+    const isNowCancelled = ['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(canonicalStatus);
 
-    if (wasActive && isNowCancelled && orderData.items) {
-      for (let item of orderData.items) {
-        if (item.id) {
-          await db.ref(`/products/${item.id}`).transaction((product) => {
-            if (product) product.stock = (parseFloat(product.stock) || 0) + parseFloat(item.qty);
-            return product;
-          });
-        }
-      }
-    }
+    if (wasActive && isNowCancelled) await restockCancelledItems(orderData);
+    if (canonicalStatus === "Delivered" && orderData.status !== "Delivered") await processReferralOnDelivery(orderData);
+    if (canonicalStatus === "Returned/Rejected") await incrementAccountCounter(orderData.email, 'returnCount');
 
-    if (newStatus === "Delivered" && orderData.status !== "Delivered" && orderData.phone) {
-      const userRef = db.ref(`/users/${orderData.phone}`);
-      const { committed, snapshot } = await userRef.transaction((user) => {
-        if (user && user.referredBy && user.referralStatus === "pending") { user.referralStatus = "completed_processing"; return user; }
-        return undefined;
-      });
-      if (committed && snapshot.val()) {
-        const userData = snapshot.val();
-        await db.ref(`/users/${userData.referredBy}`).transaction((referrer) => {
-          if (referrer) { referrer.freeDeliveries = (parseInt(referrer.freeDeliveries) || 0) + 3; referrer.rewardExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); }
-          return referrer;
-        });
-        await userRef.update({ referralStatus: "completed" });
-      }
-    }
-
-    const updates = { status: newStatus };
-    if (newStatus === 'Confirmed') updates.assignedRider = riderEmail;
+    const updates = { status: canonicalStatus };
+    if (isNowCancelled && cancelReason) updates.cancelReason = sanitizeText(cancelReason, 200);
 
     await orderRef.update(updates);
     res.json({ success: true, message: "Status Updated Successfully" });
-  } catch (error) { res.json({ success: false, message: "Update fail ho gaya." }); }
+  } catch (error) {
+    console.error("Rider update error:", error);
+    res.json({ success: false, message: "Update fail ho gaya." });
+  }
 });
 
 // ==========================================
 // 6b. 🛵🆕 RIDER: DUTY ON/OFF + AUTO-ASSIGN UNCLAIMED ORDERS
-// 🛡️ NAYA FEATURE: Rider App ab seedha Firebase mein status likhne ke
-// bajaye is endpoint ko call karega. Jab "duty ON" hoga, ye backend
-// saare "orphan" orders (jinka assignedRider null hai kyunki order
-// place hote waqt koi rider online nahi tha) ko is rider ko de dega —
-// sabse purana order pehle. Isse koi bhi order ab kabhi "gayab"
-// (permanently invisible) nahi rahega.
+// 🛡️ CRITICAL FIX: pehle YE endpoint tha jahan koi bhi authenticated user
+// (customer bhi) khud ko "online rider" bana ke saare pending orders apne
+// paas assign karva sakta tha. Ab caller ki rider-membership verify hoti hai.
 // ==========================================
-app.post('/api/rider/set-duty', async (req, res) => {
+app.post('/api/rider/set-duty', riderActionLimiter, async (req, res) => {
   try {
     const { riderToken, isOnline } = req.body;
     if (!riderToken || typeof isOnline !== 'boolean') {
@@ -600,7 +825,11 @@ app.post('/api/rider/set-duty', async (req, res) => {
     const riderEmail = decodedRider.email;
     const riderUid = decodedRider.uid;
 
-    // Rider apna khud ka node hi update kar sakta hai
+    // 🛡️ CRITICAL: sabse pehle verify karo ki ye asli registered rider hai
+    if (!(await isRegisteredRider(riderUid))) {
+      return res.json({ success: false, message: "Aap rider ke roop mein register nahi hain." });
+    }
+
     await db.ref(`/riders/${riderUid}`).update({
       email: riderEmail,
       status: isOnline ? 'online' : 'offline',
@@ -616,7 +845,6 @@ app.post('/api/rider/set-duty', async (req, res) => {
         .once('value');
       const allPending = ordersSnap.val() || {};
 
-      // Sabse purana order pehle assign ho, isliye timestamp se sort
       const unassigned = Object.keys(allPending)
         .map(key => ({ key, ...allPending[key] }))
         .filter(o => !o.assignedRider)
@@ -624,8 +852,6 @@ app.post('/api/rider/set-duty', async (req, res) => {
 
       for (const order of unassigned) {
         const orderRef = db.ref(`/orders/${order.key}`);
-        // 🛡️ Transaction use kiya taaki agar 2 riders ek saath online
-        // ho jayein, to same order do logon ko double-assign na ho
         const result = await orderRef.transaction((current) => {
           if (current && !current.assignedRider) {
             current.assignedRider = riderEmail;
@@ -671,15 +897,17 @@ app.post('/api/rider/set-duty', async (req, res) => {
 // ==========================================
 // 7. 🎁 ADMIN: ORDER STATUS UPDATE
 // ==========================================
-app.post('/api/order/update-status', async (req, res) => {
+app.post('/api/order/update-status', adminActionLimiter, async (req, res) => {
   try {
-    const { orderId, newStatus, adminToken } = req.body;
+    const { orderId, newStatus, adminToken, cancelReason } = req.body;
     if (!orderId || !newStatus || !adminToken) return res.json({ success: false, message: "Missing info" });
 
     const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
     if ((decodedAdmin.email || "").toLowerCase() !== ADMIN_EMAIL) throw new Error("Aapko Admin access nahi hai!");
 
-    if (!ALLOWED_STATUSES.includes(newStatus) && newStatus !== 'Cancelled by Customer') {
+    // 🛡️ FIX: dropdown se aane wali bina-emoji value ab canonical form mein map ho jaati hai
+    const canonicalStatus = normalizeStatus(newStatus);
+    if (!canonicalStatus || !ALLOWED_ADMIN_STATUSES.includes(canonicalStatus)) {
       return res.json({ success: false, message: "Invalid status." });
     }
 
@@ -689,48 +917,26 @@ app.post('/api/order/update-status', async (req, res) => {
     if (!orderData) return res.json({ success: false, message: "Order not found" });
 
     const wasActive = !['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(orderData.status);
-    const isNowCancelled = ['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(newStatus);
+    const isNowCancelled = ['Cancelled by Customer', 'Cancelled by SabziFresh', 'Returned/Rejected'].includes(canonicalStatus);
 
-    if (wasActive && isNowCancelled && orderData.items) {
-      for (let item of orderData.items) {
-        if (item.id) {
-          await db.ref(`/products/${item.id}`).transaction((product) => {
-            if (product) product.stock = (parseFloat(product.stock) || 0) + parseFloat(item.qty);
-            return product;
-          });
-        }
-      }
-    }
+    if (wasActive && isNowCancelled) await restockCancelledItems(orderData);
+    if (canonicalStatus === "Delivered" && orderData.status !== "Delivered") await processReferralOnDelivery(orderData);
+    if (canonicalStatus === "Returned/Rejected") await incrementAccountCounter(orderData.email, 'returnCount');
 
-    if (newStatus === "Delivered" && orderData.status !== "Delivered" && orderData.phone) {
-      const userRef = db.ref(`/users/${orderData.phone}`);
-      const { committed, snapshot } = await userRef.transaction((user) => {
-        if (user && user.referredBy && user.referralStatus === "pending") { user.referralStatus = "completed_processing"; return user; }
-        return undefined;
-      });
-      if (committed && snapshot.val()) {
-        const userData = snapshot.val();
-        await db.ref(`/users/${userData.referredBy}`).transaction((referrer) => {
-          if (referrer) { referrer.freeDeliveries = (parseInt(referrer.freeDeliveries) || 0) + 3; referrer.rewardExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000); }
-          return referrer;
-        });
-        await userRef.update({ referralStatus: "completed" });
-      }
-    }
+    const updates = { status: canonicalStatus };
+    if (isNowCancelled && cancelReason) updates.cancelReason = sanitizeText(cancelReason, 200);
 
-    if (newStatus === "Returned/Rejected" && orderData.phone) {
-      await db.ref(`/users/${orderData.phone}/returnCount`).transaction(c => (c || 0) + 1);
-    }
-
-    await orderRef.update({ status: newStatus });
+    await orderRef.update(updates);
     res.json({ success: true, message: "Status updated securely" });
   } catch (error) { res.json({ success: false, message: error.message }); }
 });
 
 // ==========================================
 // 8. 🎁 ADMIN: MANUAL REWARD DENA
+// 🛡️ FIX: rewardCount par ab upper-bound sanity-check hai (galti se koi
+// bahut bada number na de de), aur targetPhone format validate hota hai.
 // ==========================================
-app.post('/api/admin/give-reward', async (req, res) => {
+app.post('/api/admin/give-reward', adminActionLimiter, async (req, res) => {
   try {
     const { targetPhone, rewardCount, adminToken } = req.body;
     if (!targetPhone || !rewardCount || !adminToken) return res.json({ success: false, message: "Missing info" });
@@ -738,11 +944,16 @@ app.post('/api/admin/give-reward', async (req, res) => {
     const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
     if ((decodedAdmin.email || "").toLowerCase() !== ADMIN_EMAIL) throw new Error("Admin access denied");
 
+    const parsedCount = parseInt(rewardCount);
+    if (isNaN(parsedCount) || Math.abs(parsedCount) > 30) {
+      return res.json({ success: false, message: "Reward count -30 se +30 ke beech hona chahiye." });
+    }
+
     const userData = (await db.ref(`/users/${targetPhone}`).once('value')).val();
     if (!userData) return res.json({ success: false, message: "User nahi mila" });
 
     let currentFreeDel = parseInt(userData.freeDeliveries) || 0;
-    let newFreeDel = currentFreeDel + parseInt(rewardCount);
+    let newFreeDel = currentFreeDel + parsedCount;
     let newExpiry = Date.now() + (30 * 24 * 60 * 60 * 1000);
 
     await db.ref(`/users/${targetPhone}`).update({
@@ -756,6 +967,9 @@ app.post('/api/admin/give-reward', async (req, res) => {
 
 // ==========================================
 // 9. 🚫 SECURE ORDER CANCEL
+// 🛡️ FIX: ab email se account dhoondha jaata hai (order.email match check
+// hamesha tha, wo sahi tha) — sirf cancelCount update ab account-node par
+// jaata hai, order.phone (delivery-contact) par nahi.
 // ==========================================
 app.post('/api/order/cancel', orderLimiter, async (req, res) => {
   try {
@@ -774,30 +988,14 @@ app.post('/api/order/cancel', orderLimiter, async (req, res) => {
       return res.json({ success: false, message: "Order pack ho chuka hai, ab cancel nahi ho sakta." });
     }
 
-    if (orderData.items && orderData.items.length > 0) {
-      for (let item of orderData.items) {
-        if (item.id) {
-          const productRef = db.ref(`/products/${item.id}`);
-          await productRef.transaction((product) => {
-            if (product) product.stock = (parseFloat(product.stock) || 0) + parseFloat(item.qty);
-            return product;
-          });
-        }
-      }
-    }
+    await restockCancelledItems(orderData);
 
     await db.ref(`/orders/${orderId}`).update({
       status: 'Cancelled by Customer',
-      cancelReason: cancelReason || 'No reason provided'
+      cancelReason: sanitizeText(cancelReason || 'No reason provided', 200)
     });
 
-    if (orderData.phone) {
-      const userData = (await db.ref(`/users/${orderData.phone}`).once('value')).val();
-      if (userData) {
-        const newCancelCount = (parseInt(userData.cancelCount) || 0) + 1;
-        await db.ref(`/users/${orderData.phone}`).update({ cancelCount: newCancelCount });
-      }
-    }
+    await incrementAccountCounter(orderData.email, 'cancelCount');
 
     res.json({ success: true, message: "Order successfully cancel ho gaya." });
   } catch (error) { res.json({ success: false, message: "Server error" }); }
@@ -806,28 +1004,55 @@ app.post('/api/order/cancel', orderLimiter, async (req, res) => {
 // ==========================================
 // 10. 👨‍💼 ADMIN: CREATE RIDER ACCOUNT
 // ==========================================
-app.post('/api/admin/create-rider', async (req, res) => {
+app.post('/api/admin/create-rider', adminActionLimiter, async (req, res) => {
   try {
     const { name, email, password, phone, adminToken } = req.body;
     const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
     if ((decodedAdmin.email || "").toLowerCase() !== ADMIN_EMAIL) return res.json({ success: false, message: "Access denied" });
 
-    const userRecord = await admin.auth().createUser({ email, password, displayName: name });
-    await db.ref(`/riders/${userRecord.uid}`).set({ name, email, phone, status: 'offline', createdAt: Date.now() });
+    if (!name || !email || !password || !phone) return res.json({ success: false, message: "Saari details bharein!" });
+    if (!isValidEmail(email)) return res.json({ success: false, message: "Sahi email daalein!" });
+    if (!isValidPhone(phone)) return res.json({ success: false, message: "Sahi 10-digit phone daalein!" });
+    if (String(password).length < 6) return res.json({ success: false, message: "Password kam se kam 6 character ka ho!" });
+
+    const cleanName = sanitizeText(name, 60);
+    const userRecord = await admin.auth().createUser({ email, password, displayName: cleanName });
+    await db.ref(`/riders/${userRecord.uid}`).set({ name: cleanName, email, phone, status: 'offline', createdAt: Date.now() });
 
     res.json({ success: true, message: "Rider successfully ban gaya!" });
   } catch (error) { res.json({ success: false, message: error.message }); }
 });
 
 // ==========================================
-// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
-// 🛡️ FIX #1: console.log ab AUTH CHECK ke BAAD chal raha hai
-// (pehle bina-auth request bhi log-spam kar sakti thi)
-// 🛡️ FIX #2: segment name "All" wapas kiya (Total Subscriptions
-// aapke OneSignal app mein exist nahi karta to silently fail ho jata)
-// 🛡️ FIX #3: title/message par server-side length-validation add ki
+// 10b. 🆕 ADMIN: DELETE RIDER (poora — Auth account samet)
+// 🛡️ FIX: pehle admin-panel sirf `/riders/{uid}` DB-node delete karta tha,
+// jisse rider ka Firebase Auth account (email+password) valid hi rehta
+// tha — fired rider phir bhi login karke dobara apna rider-node bana sakta
+// tha. Ab ye endpoint dono hataata hai: DB node aur Auth account.
 // ==========================================
-app.post('/api/admin/send-notification', async (req, res) => {
+app.post('/api/admin/delete-rider', adminActionLimiter, async (req, res) => {
+  try {
+    const { riderUid, adminToken } = req.body;
+    if (!riderUid || !adminToken) return res.json({ success: false, message: "Missing info" });
+
+    const decodedAdmin = await admin.auth().verifyIdToken(adminToken);
+    if ((decodedAdmin.email || "").toLowerCase() !== ADMIN_EMAIL) return res.json({ success: false, message: "Access denied" });
+
+    await db.ref(`/riders/${riderUid}`).remove();
+    try {
+      await admin.auth().deleteUser(riderUid);
+    } catch (authErr) {
+      console.warn("Rider Auth account delete warning (DB node phir bhi hata diya gaya):", authErr.message);
+    }
+
+    res.json({ success: true, message: "Rider poori tarah hata diya gaya (DB + Login access)." });
+  } catch (error) { res.json({ success: false, message: error.message }); }
+});
+
+// ==========================================
+// 11. 🔔 ADMIN: SECURE BROADCAST NOTIFICATION
+// ==========================================
+app.post('/api/admin/send-notification', adminActionLimiter, async (req, res) => {
   try {
     const { title, message, adminToken } = req.body;
 
@@ -836,7 +1061,6 @@ app.post('/api/admin/send-notification', async (req, res) => {
       return res.json({ success: false, message: "Aapko Admin access nahi hai!" });
     }
 
-    // ✅ Ab log auth-check ke BAAD print hota hai
     console.log(`🔔 Notification Request Aayi! Title: ${title}`);
 
     if (!title || !message) {
@@ -856,12 +1080,9 @@ app.post('/api/admin/send-notification', async (req, res) => {
 
     const payload = {
       app_id: ONESIGNAL_APP_ID,
-      included_segments: ["All"], // 🛡️ FIX: "Total Subscriptions" hataya — confirm karo ki ye
-                                   // segment aapke OneSignal dashboard mein "Subscribed Users"
-                                   // ke against exist karta hai; agar naya API version use ho raha
-                                   // hai to yahan sahi segment-name daalna
-      headings: { en: title },
-      contents: { en: message }
+      included_segments: ["All"],
+      headings: { en: sanitizeText(title, 60) },
+      contents: { en: sanitizeText(message, 200) }
     };
 
     const response = await fetch("https://onesignal.com/api/v1/notifications", {
@@ -886,14 +1107,20 @@ app.post('/api/admin/send-notification', async (req, res) => {
 
 // ==========================================
 // 12. 🛵 RIDER DASHBOARD: Pending Orders
+// 🛡️ CRITICAL FIX: caller ki rider-membership ab verify hoti hai
 // ==========================================
-app.post('/api/rider/my-orders', async (req, res) => {
+app.post('/api/rider/my-orders', riderActionLimiter, async (req, res) => {
   try {
     const { riderToken } = req.body;
     if (!riderToken) return res.json({ success: false, message: "Token missing" });
 
     const decodedRider = await admin.auth().verifyIdToken(riderToken);
     const riderEmail = decodedRider.email;
+    const riderUid = decodedRider.uid;
+
+    if (!(await isRegisteredRider(riderUid))) {
+      return res.json({ success: false, message: "Aap rider ke roop mein register nahi hain." });
+    }
 
     const ordersSnap = await db.ref('/orders').orderByChild('assignedRider').equalTo(riderEmail).once('value');
     const allOrders = ordersSnap.val() || {};
