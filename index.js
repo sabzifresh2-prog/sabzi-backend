@@ -148,20 +148,22 @@ function isValidPhone(p) { return /^[6-9][0-9]{9}$/.test(String(p || '').trim())
 
 function todayIST() { return new Date().toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }); }
 
-// 🛡️ NAYA FIX: user-supplied text (name, address, cancel-reason) ab yahin
-// backend par bhi sanitize hota hai — pehle sirf frontend sanitize karta tha,
-// jo koi bhi direct-API-call se bypass kar sakta tha (stored-XSS risk, jo
-// Rider/Admin app mein render hone par trigger ho sakta tha).
-function sanitizeText(str, maxLen = 300) {
+// 🛡️ CRITICAL FIX (#1): pehle ye function HTML-escape (&,<,>,",') bhi
+// karta tha aur DB mein PERMANENTLY escaped value save hota tha. Chunki
+// customer.html bhi pehle se apne taraf se sanitize() karke bhejta tha,
+// aur phir Admin/Rider apps render-time pe FIR se sanitize() karte the —
+// ek naam/address teen baar escape ho jaata tha, aur DB mein hamesha ke
+// liye corrupted (double-encoded) save ho jaata tha (sirf display-glitch
+// nahi, asli data hi kharab ho jaata tha).
+// Sahi pattern: RAW data store karo, sirf jab HTML mein RENDER karo tab
+// escape karo (jo Admin/Rider/Customer apps already apne render-functions
+// mein karte hain). Isliye ab ye function sirf trim + length-cap karta
+// hai — HTML-escape bilkul nahi karta.
+function cleanText(str, maxLen = 300) {
   if (str === null || str === undefined) return '';
   let s = String(str).trim();
   if (s.length > maxLen) s = s.substring(0, maxLen);
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return s;
 }
 
 // 🛡️ CRITICAL FIX: ye helper CHECK karta hai ki caller sach mein ek
@@ -187,6 +189,48 @@ async function getUserAccountByEmail(email) {
   if (!val) return null;
   const accountPhone = Object.keys(val)[0];
   return { accountPhone, ...val[accountPhone] };
+}
+
+// 🛡️ FIX (#3): pehle refer-code sirf ek baar random generate hota tha, bina
+// collision-check ke — sirf 9000 possible 4-digit codes hain, isliye
+// collision hona practically possible tha. Jab collision hota, Firebase
+// rule silently write reject kar deta (`!data.exists()` fail ho jaata),
+// lekin user ka `referCode` field already us (kabhi-claim-na-hue) code par
+// set ho chuka hota — us user ka refer-code hamesha ke liye broken rehta,
+// bina kisi ko pata chale. Ab pehle code ko `referCodes/{code}` mein
+// ATOMICALLY claim karte hain (Admin SDK transaction se), aur collision
+// hone par naya code try karte hain, retry ke saath.
+async function generateUniqueReferCode(phone, maxAttempts = 6) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const code = "SF" + Math.floor(1000 + Math.random() * 9000);
+    const result = await db.ref(`/referCodes/${code}`).transaction((current) => {
+      if (current) return; // already claimed by someone — abort, retry with new code
+      return phone;
+    });
+    if (result.committed) return code;
+  }
+  // Extreme-unlikely fallback (6 collisions in a row) — timestamp-based, guaranteed unique
+  const fallbackCode = "SF" + Date.now().toString().slice(-6);
+  await db.ref(`/referCodes/${fallbackCode}`).set(phone);
+  return fallbackCode;
+}
+
+// 🛡️ FIX (#19, best-effort): referral "one-device-one-use" protection
+// client-side (localStorage) hai, jo incognito/clear-storage se trivially
+// bypass ho jaata hai. Isse poori tarah rokna backend-only se possible
+// nahi (IP shared/VPN ho sakta hai), lekin ek IP-based daily-throttle
+// abuse ko kaafi mushkil bana deta hai — defense-in-depth ke roop mein.
+async function checkReferralIpThrottle(ip) {
+  if (!ip) return true; // IP na mile to throttle skip (fail-open, availability priority)
+  const key = Buffer.from(String(ip)).toString('hex');
+  const today = todayIST();
+  const snap = await db.ref(`referral_ip_throttle/${key}`).once('value');
+  let rec = snap.val() || { count: 0, date: '' };
+  if (rec.date !== today) { rec.count = 0; rec.date = today; }
+  if (rec.count >= 3) return false;
+  rec.count += 1;
+  await db.ref(`referral_ip_throttle/${key}`).set(rec);
+  return true;
 }
 
 async function verifyAndGetEmail(userToken) {
@@ -319,12 +363,19 @@ app.post('/api/otp/send', otpSendLimiter, async (req, res) => {
       return res.json({ success: false, message: `Zyada attempts! ${OTP_BLOCK_HOURS} ghante baad try karein.` });
     }
 
+    // 🛡️ CRITICAL FIX (#16): pehle sendCount yahin turant DB mein save ho
+    // jaata tha, EMAIL bhejne se PEHLE. Agar mail-relay (GAS, jo Render
+    // free-tier ke saath kabhi-kabhi unreliable ho sakta hai) fail ho jaaye,
+    // to bhi customer ka ek daily-attempt "consume" ho jaata — genuine user
+    // baar-baar fail hone par bina kabhi OTP paaye 24-ghante ke liye block
+    // ho sakta tha. Ab pehle EMAIL bhejte hain, aur sirf SUCCESS confirm
+    // hone ke baad hi DB-record (sendCount) update hota hai.
     const otp = generateOTP();
-    rec.otp = otp; rec.otpTime = now; rec.sendCount += 1; rec.verifyAttempts = 0;
-    await setOtpRecord(cleanEmail, rec);
-
     const sendResult = await sendOtpEmail(cleanEmail, otp);
     if (!sendResult.ok) return res.json({ success: false, message: "Email nahi ja payi. Dobara try karein." });
+
+    rec.otp = otp; rec.otpTime = now; rec.sendCount += 1; rec.verifyAttempts = 0;
+    await setOtpRecord(cleanEmail, rec);
 
     res.json({ success: true, message: `OTP bhej diya! ${OTP_EXPIRE_MIN} min mein use karein.` });
   } catch (error) {
@@ -423,7 +474,7 @@ app.post('/api/auth/register', generalLimiter, async (req, res) => {
   try {
     const { phone, name, email, referCode, userToken } = req.body;
     const cleanEmail = email ? email.toLowerCase().trim() : "";
-    const cleanName = sanitizeText(name, 60);
+    const cleanName = cleanText(name, 60);
 
     if (!phone || !cleanName || !userToken || !cleanEmail) {
       return res.json({ success: false, message: "Details, Email aur Token zaroori hai!" });
@@ -452,6 +503,10 @@ app.post('/api/auth/register', generalLimiter, async (req, res) => {
 
     let referrerPhone = null;
     if (referCode) {
+      // 🛡️ FIX (#19): referral-abuse ke against ek extra IP-based layer
+      const ipOk = await checkReferralIpThrottle(req.ip);
+      if (!ipOk) return res.json({ success: false, message: "Bahut zyada referral-registrations is network se. Thodi der baad try karein." });
+
       const referSnap = await db.ref('/referCodes').once('value');
       const allReferCodes = referSnap.val() || {};
       if (allReferCodes[referCode]) {
@@ -462,7 +517,8 @@ app.post('/api/auth/register', generalLimiter, async (req, res) => {
       }
     }
 
-    const newCode = "SF" + Math.floor(1000 + Math.random() * 9000);
+    // 🛡️ FIX (#3): ab collision-safe generation — retry ke saath
+    const newCode = await generateUniqueReferCode(phone);
     const newUser = {
       name: cleanName, email: cleanEmail, phone, savedVillage: "", savedStreet: "", referCode: newCode,
       freeDeliveries: 0, rewardExpiry: null, registeredAt: Date.now(),
@@ -482,7 +538,8 @@ app.post('/api/auth/register', generalLimiter, async (req, res) => {
     }
 
     await db.ref(`/users/${phone}`).set(newUser);
-    await db.ref(`/referCodes/${newCode}`).set(phone);
+    // Note: referCodes/{newCode} pehle hi generateUniqueReferCode() ke andar
+    // transaction se claim ho chuka hai — dobara set() karne ki zaroorat nahi.
 
     res.json({ success: true, user: newUser });
   } catch (error) {
@@ -502,7 +559,7 @@ app.post('/api/order/calculate', generalLimiter, async (req, res) => {
     const productsDB = (await db.ref('/products').once('value')).val() || {};
     const settingsDB = (await db.ref('/settings').once('value')).val() || {};
 
-    let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 0;
+    let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 20; // 🛡️ FIX #17: default ab 20 hai, customer/admin app ke defaults se consistent (pehle 0 tha, jo mismatch create karta tha)
     let adminFreeLimit = parseInt(settingsDB.minFreeDeliveryThreshold) || 0;
 
     let secureSubtotal = 0; let secureItemsList = [];
@@ -553,8 +610,8 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
     if (!isValidPhone(customerDetails.phone)) {
       return res.json({ success: false, message: "Sahi delivery mobile number daalein!" });
     }
-    const deliveryName = sanitizeText(customerDetails.name, 60);
-    const deliveryAddress = sanitizeText(customerDetails.address, 300);
+    const deliveryName = cleanText(customerDetails.name, 60);
+    const deliveryAddress = cleanText(customerDetails.address, 300);
     if (!deliveryName || !deliveryAddress) {
       return res.json({ success: false, message: "Naam aur address zaroori hai!" });
     }
@@ -569,7 +626,7 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
     if (settingsDB.isAppClosed === true) return res.json({ success: false, message: "Abhi dukan band hai." });
 
     const productsDB = (await db.ref('/products').once('value')).val() || {};
-    let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 0;
+    let adminDeliveryFee = parseInt(settingsDB.deliveryCharge) || 20; // 🛡️ FIX #17: default ab 20 hai, customer/admin app ke defaults se consistent (pehle 0 tha, jo mismatch create karta tha)
     let adminFreeLimit = parseInt(settingsDB.minFreeDeliveryThreshold) || 0;
 
     let secureSubtotal = 0; let secureItemsList = []; let itemsObj = [];
@@ -624,7 +681,13 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
     // 🛡️ FIX: reward hamesha ACCOUNT node (email se mila accountPhone) par
     // update hota hai — customerDetails.phone (jo alag delivery-number ho
     // sakta hai) par nahi.
-    if (customerDetails.usedReward && secureSubtotal > 0 && parseInt(userAccount.freeDeliveries) > 0) {
+    // 🛡️ CRITICAL FIX (#5): pehle sirf `freeDeliveries > 0` check hota tha —
+    // `rewardExpiry` bilkul check nahi hota tha! Agar client-side expiry-zeroing
+    // (jo customer.html mein hai) abhi tak run nahi hui thi, ya koi direct-API
+    // call kare, to EXPIRED reward bhi apply ho sakta tha. Ab expiry bhi
+    // explicitly check hoti hai.
+    const isRewardStillValid = !userAccount.rewardExpiry || userAccount.rewardExpiry > Date.now();
+    if (customerDetails.usedReward && isRewardStillValid && secureSubtotal > 0 && parseInt(userAccount.freeDeliveries) > 0) {
       secureDeliveryCharge = 0;
       let newFreeDel = parseInt(userAccount.freeDeliveries) - 1;
       await db.ref(`/users/${userAccount.accountPhone}`).update({ freeDeliveries: newFreeDel });
@@ -798,7 +861,7 @@ app.post('/api/order/rider-update', riderActionLimiter, async (req, res) => {
     if (canonicalStatus === "Returned/Rejected") await incrementAccountCounter(orderData.email, 'returnCount');
 
     const updates = { status: canonicalStatus };
-    if (isNowCancelled && cancelReason) updates.cancelReason = sanitizeText(cancelReason, 200);
+    if (isNowCancelled && cancelReason) updates.cancelReason = cleanText(cancelReason, 200);
 
     await orderRef.update(updates);
     res.json({ success: true, message: "Status Updated Successfully" });
@@ -924,7 +987,7 @@ app.post('/api/order/update-status', adminActionLimiter, async (req, res) => {
     if (canonicalStatus === "Returned/Rejected") await incrementAccountCounter(orderData.email, 'returnCount');
 
     const updates = { status: canonicalStatus };
-    if (isNowCancelled && cancelReason) updates.cancelReason = sanitizeText(cancelReason, 200);
+    if (isNowCancelled && cancelReason) updates.cancelReason = cleanText(cancelReason, 200);
 
     await orderRef.update(updates);
     res.json({ success: true, message: "Status updated securely" });
@@ -992,7 +1055,7 @@ app.post('/api/order/cancel', orderLimiter, async (req, res) => {
 
     await db.ref(`/orders/${orderId}`).update({
       status: 'Cancelled by Customer',
-      cancelReason: sanitizeText(cancelReason || 'No reason provided', 200)
+      cancelReason: cleanText(cancelReason || 'No reason provided', 200)
     });
 
     await incrementAccountCounter(orderData.email, 'cancelCount');
@@ -1015,7 +1078,7 @@ app.post('/api/admin/create-rider', adminActionLimiter, async (req, res) => {
     if (!isValidPhone(phone)) return res.json({ success: false, message: "Sahi 10-digit phone daalein!" });
     if (String(password).length < 6) return res.json({ success: false, message: "Password kam se kam 6 character ka ho!" });
 
-    const cleanName = sanitizeText(name, 60);
+    const cleanName = cleanText(name, 60);
     const userRecord = await admin.auth().createUser({ email, password, displayName: cleanName });
     await db.ref(`/riders/${userRecord.uid}`).set({ name: cleanName, email, phone, status: 'offline', createdAt: Date.now() });
 
@@ -1081,8 +1144,8 @@ app.post('/api/admin/send-notification', adminActionLimiter, async (req, res) =>
     const payload = {
       app_id: ONESIGNAL_APP_ID,
       included_segments: ["All"],
-      headings: { en: sanitizeText(title, 60) },
-      contents: { en: sanitizeText(message, 200) }
+      headings: { en: cleanText(title, 60) },
+      contents: { en: cleanText(message, 200) }
     };
 
     const response = await fetch("https://onesignal.com/api/v1/notifications", {
@@ -1135,6 +1198,100 @@ app.post('/api/rider/my-orders', riderActionLimiter, async (req, res) => {
     res.json({ success: true, count: totalPendingCount, orders: pendingOrders });
   } catch (error) { res.json({ success: false, message: "Orders load nahi hue." }); }
 });
+
+// ==========================================
+// 🧹 SCHEDULED CLEANUP JOBS
+// Ye backend-side chalta hai — Admin panel khula ho ya nahi, dono mein
+// kaam karta hai (pehle notification-cleanup sirf Admin panel ke client-
+// side setInterval() se chalta tha, jo panel band hone par ruk jaata tha).
+// NOTE: Render free-tier idle hone par sleep hota hai, isliye ye jobs
+// "best-effort" hain — jab server active/awake hai tabhi chalenge. Ye
+// vaisi hi limitation hai jo humne OTP rate-limiters ke liye pehle bhi
+// discuss ki thi.
+// ==========================================
+const OTP_STALE_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;      // 2 din
+const INBOX_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;          // 30 din
+const NOTIF_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;       // 24 ghante
+const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;               // har 6 ghante
+
+// 🛡️ FIX (#11): otp_data/{hex} node har OTP-request pe banta hai lekin
+// kabhi delete nahi hota tha — verify-success par sirf fields reset hote
+// the (otp="", sendCount=0), node hamesha ke liye reh jaata tha. Bina
+// bound-growth control ke, ye node hazaaron records jama kar leta.
+async function cleanupStaleOtpRecords() {
+  try {
+    const snap = await db.ref('otp_data').once('value');
+    const data = snap.val();
+    if (!data) return;
+    const now = Date.now();
+    const updates = {};
+    let count = 0;
+    Object.keys(data).forEach(key => {
+      const rec = data[key];
+      const lastActivity = Math.max(rec.otpTime || 0, rec.blockedUntil || 0);
+      const isStale = (now - lastActivity) > OTP_STALE_RETENTION_MS;
+      const isUnblocked = !rec.blockedUntil || rec.blockedUntil <= now;
+      if (isStale && isUnblocked) { updates[key] = null; count++; }
+    });
+    if (count > 0) {
+      await db.ref('otp_data').update(updates);
+      console.log(`🧹 Cleanup: ${count} stale otp_data records hataye`);
+    }
+  } catch (e) { console.error("OTP cleanup error:", e); }
+}
+
+// 🛡️ FIX (#12): users/{phone}/inbox/{id} sirf tab delete hoti thi jab
+// customer khud "read" mark karta — agar kabhi na khole, notification
+// hamesha ke liye DB mein padi rehti (unbounded growth). Customer app
+// ka listener bhi 30-din se purani entries ko sirf "invisible" karta tha
+// (query filter se), delete nahi karta tha.
+async function cleanupOldUserInboxes() {
+  try {
+    const cutoff = Date.now() - INBOX_RETENTION_MS;
+    const usersSnap = await db.ref('users').once('value');
+    const usersData = usersSnap.val();
+    if (!usersData) return;
+    let totalDeleted = 0;
+    for (const phone of Object.keys(usersData)) {
+      const inbox = usersData[phone].inbox;
+      if (!inbox) continue;
+      const updates = {};
+      let count = 0;
+      Object.keys(inbox).forEach(notifId => {
+        if ((inbox[notifId].timestamp || 0) < cutoff) { updates[notifId] = null; count++; }
+      });
+      if (count > 0) {
+        await db.ref(`users/${phone}/inbox`).update(updates);
+        totalDeleted += count;
+      }
+    }
+    if (totalDeleted > 0) console.log(`🧹 Cleanup: ${totalDeleted} purani inbox-notifications hataye (${INBOX_RETENTION_MS / 86400000} din se purani)`);
+  } catch (e) { console.error("Inbox cleanup error:", e); }
+}
+
+// 🛡️ FIX (#13): pehle ye sirf Admin panel ke client-side setInterval() se
+// chalta tha — Admin panel band ho to cleanup ruk jaata. Ab backend-scheduled
+// hai, isliye hamesha chalega (jab tak Render process awake hai).
+async function cleanupNotificationsHistory() {
+  try {
+    const cutoff = Date.now() - NOTIF_HISTORY_RETENTION_MS;
+    const snap = await db.ref('notifications').orderByChild('timestamp').endAt(cutoff).once('value');
+    const data = snap.val();
+    if (!data) return;
+    const updates = {};
+    Object.keys(data).forEach(k => { updates[k] = null; });
+    await db.ref('notifications').update(updates);
+    console.log(`🧹 Cleanup: ${Object.keys(updates).length} purani notification-history entries hataye`);
+  } catch (e) { console.error("Notification-history cleanup error:", e); }
+}
+
+function runScheduledCleanup() {
+  cleanupStaleOtpRecords();
+  cleanupOldUserInboxes();
+  cleanupNotificationsHistory();
+}
+runScheduledCleanup(); // startup par ek baar turant
+setInterval(runScheduledCleanup, CLEANUP_INTERVAL_MS);
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => { console.log(`Server port ${PORT} par chal raha hai`); });
