@@ -1210,7 +1210,7 @@ app.post('/api/rider/my-orders', riderActionLimiter, async (req, res) => {
 // discuss ki thi.
 // ==========================================
 const OTP_STALE_RETENTION_MS = 2 * 24 * 60 * 60 * 1000;      // 2 din
-const INBOX_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;          // 30 din
+const INBOX_RETENTION_MS = 24 * 60 * 60 * 1000;               // 24 ghante — jaisa maanga gaya
 const NOTIF_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;       // 24 ghante
 const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;               // har 6 ghante
 
