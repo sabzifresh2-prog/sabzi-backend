@@ -233,6 +233,26 @@ async function checkReferralIpThrottle(ip) {
   return true;
 }
 
+// 🛡️ NAYA, MUCH STRONGER FIX: Median.co (jo APK banata hai) ek
+// native-level `installationId` deta hai — ye browser ke localStorage se
+// bilkul alag jagah (native app-storage) mein store hoti hai. Isliye
+// "localStorage/cache clear karo, naya account bana ke khud-ko-refer
+// karo" wala casual-fraud ab is check se rukta hai — kyunki cache-clear
+// se installationId badalti hi nahi (sirf poora app uninstall+reinstall
+// karne par badalti hai, jo bahut zyada friction hai).
+// Web-browser (APK ke bahar) mein installationId kabhi milti hi nahi —
+// tab ye check fail-open rehta hai (normal website-users block nahi
+// honge, sirf app-users ke liye extra-protection hai).
+async function checkReferralInstallationThrottle(installationId) {
+  if (!installationId) return true; // web-browser ya installationId na milna — skip (fail-open)
+  const key = Buffer.from(String(installationId)).toString('hex');
+  const snap = await db.ref(`referral_install_throttle/${key}`).once('value');
+  const rec = snap.val();
+  if (rec && rec.count >= 1) return false; // ek installation se lifetime mein sirf EK referred-registration
+  await db.ref(`referral_install_throttle/${key}`).set({ count: (rec ? rec.count : 0) + 1, lastUsed: Date.now() });
+  return true;
+}
+
 async function verifyAndGetEmail(userToken) {
   const decoded = await admin.auth().verifyIdToken(userToken);
   return (decoded.email || "").toLowerCase().trim();
@@ -472,7 +492,7 @@ app.post('/api/auth/lookup', lookupLimiter, async (req, res) => {
 // ==========================================
 app.post('/api/auth/register', generalLimiter, async (req, res) => {
   try {
-    const { phone, name, email, referCode, userToken } = req.body;
+    const { phone, name, email, referCode, userToken, installationId } = req.body;
     const cleanEmail = email ? email.toLowerCase().trim() : "";
     const cleanName = cleanText(name, 60);
 
@@ -503,9 +523,15 @@ app.post('/api/auth/register', generalLimiter, async (req, res) => {
 
     let referrerPhone = null;
     if (referCode) {
-      // 🛡️ FIX (#19): referral-abuse ke against ek extra IP-based layer
+      // 🛡️ FIX (#19): referral-abuse ke against IP-based layer (weak, daily-reset)
       const ipOk = await checkReferralIpThrottle(req.ip);
       if (!ipOk) return res.json({ success: false, message: "Bahut zyada referral-registrations is network se. Thodi der baad try karein." });
+
+      // 🛡️ NAYA, STRONG FIX: Median.co ka native installationId (jab APK
+      // ke andar se aaye) — ye localStorage-clear se bypass nahi hota,
+      // isliye ye IP-throttle se kahin zyada bharosemand hai.
+      const installOk = await checkReferralInstallationThrottle(installationId);
+      if (!installOk) return res.json({ success: false, message: "Is device se ek hi referral-registration ho sakti hai." });
 
       const referSnap = await db.ref('/referCodes').once('value');
       const allReferCodes = referSnap.val() || {};
