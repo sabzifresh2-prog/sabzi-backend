@@ -712,9 +712,20 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
     // (jo customer.html mein hai) abhi tak run nahi hui thi, ya koi direct-API
     // call kare, to EXPIRED reward bhi apply ho sakta tha. Ab expiry bhi
     // explicitly check hoti hai.
+    // 🛡️ NAYA CRITICAL FIX: pehle reward UNCONDITIONALLY consume ho jaata
+    // tha jab bhi customer ke paas active reward hota — chahe order pehle
+    // se hi min-order-threshold cross kar chuka ho (jahan delivery वैसे bhi
+    // FREE hoti, reward ki zaroorat hi nahi thi). Isse customer ka reward
+    // bewajah "waste" ho jaata tha. Ab reward SIRF TABHI consume hoti hai
+    // jab delivery-charge ACTUALLY lagne wala tha (yaani order threshold
+    // se kam tha) — agar order pehle se hi free-delivery-eligible hai,
+    // reward bilkul touch nahi hoti, bachi rehti hai.
     const isRewardStillValid = !userAccount.rewardExpiry || userAccount.rewardExpiry > Date.now();
-    if (customerDetails.usedReward && isRewardStillValid && secureSubtotal > 0 && parseInt(userAccount.freeDeliveries) > 0) {
+    const wasDeliveryChargeable = secureDeliveryCharge > 0;
+    let rewardActuallyUsed = false;
+    if (customerDetails.usedReward && isRewardStillValid && wasDeliveryChargeable && secureSubtotal > 0 && parseInt(userAccount.freeDeliveries) > 0) {
       secureDeliveryCharge = 0;
+      rewardActuallyUsed = true;
       let newFreeDel = parseInt(userAccount.freeDeliveries) - 1;
       await db.ref(`/users/${userAccount.accountPhone}`).update({ freeDeliveries: newFreeDel });
     }
@@ -747,7 +758,7 @@ app.post('/api/order/place', orderLimiter, async (req, res) => {
       id: orderId, timestamp: orderTimestamp, status: "Packing in Progress ⏳", total: secureFinalTotal,
       deliveryCharge: secureDeliveryCharge, customer: deliveryName, phone: customerDetails.phone,
       email: userAccount.email || '', address: deliveryAddress, items: itemsObj, assignedRider: assignedRiderEmail,
-      usedFreeDelivery: secureDeliveryCharge === 0 && secureSubtotal > 0 && !!customerDetails.usedReward
+      usedFreeDelivery: rewardActuallyUsed
     };
 
     await db.ref(`/orders/${orderId}`).set(orderData);
